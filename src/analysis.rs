@@ -722,7 +722,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                     })
                                     .collect::<Vec<_>>()
                                     .join("\n");
-                                format!("struct {} {{\n{}\n}}", td.name, fields_str)
+                                format!("type definition {} {{\n{}\n}}", td.name, fields_str)
                             }
                             TypeDefKind::Union(types) => {
                                 format!(
@@ -1730,7 +1730,7 @@ pub fn type_at(analysis: &DocumentAnalysis, offset: usize) -> Option<String> {
                         if let Some(td) = analysis.type_defs.get(&name) {
                             return match &td.kind {
                                 TypeDefKind::Struct(fields) => Some(format!(
-                                    "struct {{ {} }}",
+                                    "type definition {{ {} }}",
                                     fields
                                         .iter()
                                         .map(|f| format!("{}: {}", f.name, f.ty.display()))
