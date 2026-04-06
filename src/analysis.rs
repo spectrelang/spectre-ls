@@ -886,16 +886,14 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 if !doc.is_empty() {
                                     doc.push_str("\n\n");
                                 }
-                                doc.push_str(
-                                    "⚠️ **Untrusted** — may have unintended side-effects.",
-                                );
+                                doc.push_str("UNTRUSTED — may have unintended side-effects.");
                             }
                             if let Some(pre) = &f.pre {
                                 if !pre.conditions.is_empty() {
                                     if !doc.is_empty() {
                                         doc.push_str("\n\n");
                                     }
-                                    doc.push_str("**Preconditions:**\n");
+                                    doc.push_str("Preconditions:\n");
                                     for cond in &pre.conditions {
                                         doc.push_str(&format!(
                                             "- `{}`: `{}`\n",
@@ -924,7 +922,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "trust" {
             return Some(HoverResult {
                 signature: "trust".to_string(),
-                documentation: "**trust** — Asserts that calling an untrusted (`!`) function is intentional.\n\n\
+                documentation: "trust — Asserts that calling an untrusted (`!`) function is intentional.\n\n\
                     Allows calling a `!`-suffixed (untrusted) function from a pure (non-`!`) context.\n\
                     This tells the compiler: \"I know what I'm doing.\"\n\n\
                     Untrusted functions may have unintended side-effects and bypass the trust system."
