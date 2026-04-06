@@ -1126,7 +1126,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
             return Some(HoverResult {
                 signature: "type".to_string(),
                 documentation: "**type** — Type definition keyword.\n\n\
-                    `type Foo = { x: i32, y: mut i32 }` defines a struct type."
+                    `type Foo = { x: i32, y: mut i32 }` defines a type structure."
                     .to_string(),
             });
         }
