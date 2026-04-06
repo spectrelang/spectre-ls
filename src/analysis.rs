@@ -82,7 +82,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                         if !doc.is_empty() {
                             doc.push_str("\n\n");
                         }
-                        doc.push_str("**Preconditions:**\n");
+                        doc.push_str("Preconditions:\n");
                         for cond in &pre.conditions {
                             if pre.guarded {
                                 doc.push_str(&format!(
@@ -105,7 +105,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                         if !doc.is_empty() {
                             doc.push_str("\n\n");
                         }
-                        doc.push_str("**Postconditions:**\n");
+                        doc.push_str("Postconditions:\n");
                         for cond in &post.conditions {
                             doc.push_str(&format!(
                                 "- `{}`: `{}`\n",
@@ -781,7 +781,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                         );
 
                         if f.returns_untrusted {
-                            sig.push_str("\n\n(!) **UNTRUSTED FUNCTION** — may have unintended side-effects and bypasses the trust system.");
+                            sig.push_str("\n\n(!) UNTRUSTED FUNCTION — may have unintended side-effects and bypasses the trust system.");
                         }
 
                         let mut doc = f.doc_comments.join("\n");
@@ -792,7 +792,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                     doc.push_str("\n\n");
                                 }
                                 let guard_label = if pre.guarded { " (guarded)" } else { "" };
-                                doc.push_str(&format!("**Preconditions{}:**\n", guard_label));
+                                doc.push_str(&format!("Preconditions{}:\n", guard_label));
                                 for cond in &pre.conditions {
                                     let expr_text = expr_source(source, &cond.expr);
                                     doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
@@ -805,7 +805,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 if !doc.is_empty() {
                                     doc.push_str("\n\n");
                                 }
-                                doc.push_str("**Postconditions:**\n");
+                                doc.push_str("Postconditions:\n");
                                 for cond in &post.conditions {
                                     let expr_text = expr_source(source, &cond.expr);
                                     doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
@@ -843,7 +843,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                         );
 
                         if f.returns_untrusted {
-                            sig.push_str("\n\n(!) **UNTRUSTED FUNCTION** — may have unintended side-effects and bypasses the trust system.");
+                            sig.push_str("\n\n(!) UNTRUSTED FUNCTION — may have unintended side-effects and bypasses the trust system.");
                         }
 
                         let mut doc = f.doc_comments.join("\n");
@@ -854,7 +854,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                     doc.push_str("\n\n");
                                 }
                                 let guard_label = if pre.guarded { " (guarded)" } else { "" };
-                                doc.push_str(&format!("**Preconditions{}:**\n", guard_label));
+                                doc.push_str(&format!("Preconditions{}:\n", guard_label));
                                 for cond in &pre.conditions {
                                     let expr_text = expr_source(source, &cond.expr);
                                     doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
@@ -867,7 +867,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 if !doc.is_empty() {
                                     doc.push_str("\n\n");
                                 }
-                                doc.push_str("**Postconditions:**\n");
+                                doc.push_str("Postconditions:\n");
                                 for cond in &post.conditions {
                                     let expr_text = expr_source(source, &cond.expr);
                                     doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
@@ -1068,12 +1068,12 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
             return Some(HoverResult {
                 signature: word.clone(),
                 documentation: if word == "fn" {
-                    "**fn** — Function definition keyword.\n\n\
-                    Functions without a `!` suffix on the return type are **pure** (trusted).\n\
+                    "fn — Function definition keyword.\n\n\
+                    Functions without a `!` suffix on the return type are pure (trusted).\n\
                     Pure functions cannot directly call untrusted functions unless wrapped in `trust`."
                         .to_string()
                 } else {
-                    "**pure** — A function without `!` on its return type is considered pure/trusted."
+                    "pure — A function without `!` on its return type is considered pure/trusted."
                         .to_string()
                 },
             });
@@ -1081,7 +1081,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "pre" {
             return Some(HoverResult {
                 signature: "pre".to_string(),
-                documentation: "**pre** — Preconditions block for a function.\n\n\
+                documentation: "pre — Preconditions block for a function.\n\n\
                     Lists named boolean expressions that must be true when the function is called.\n\
                     Use `guarded pre` for preconditions that the function itself verifies."
                     .to_string(),
@@ -1090,7 +1090,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "post" {
             return Some(HoverResult {
                 signature: "post".to_string(),
-                documentation: "**post** — Postconditions block for a function.\n\n\
+                documentation: "post — Postconditions block for a function.\n\n\
                     Lists named boolean expressions that must be true when the function returns."
                     .to_string(),
             });
@@ -1098,7 +1098,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "guarded" {
             return Some(HoverResult {
                 signature: "guarded".to_string(),
-                documentation: "**guarded** — Modifies a `pre` block to indicate the function itself \
+                documentation: "guarded — Modifies a `pre` block to indicate the function itself \
                     verifies the precondition at runtime, rather than requiring the caller to guarantee it."
                     .to_string(),
             });
@@ -1106,7 +1106,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "mut" {
             return Some(HoverResult {
                 signature: "mut".to_string(),
-                documentation: "**mut** — Marks a variable, field, or type as mutable.\n\n\
+                documentation: "mut — Marks a variable, field, or type as mutable.\n\n\
                     `val x: mut i32 = 10` — mutable variable\n\
                     `y: mut i32` — mutable struct field\n\
                     A `val` binding is always immutable regardless of `mut` on the type."
@@ -1116,7 +1116,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "ref" {
             return Some(HoverResult {
                 signature: "ref".to_string(),
-                documentation: "**ref** — Raw reference (pointer) type.\n\n\
+                documentation: "ref — Raw reference (pointer) type.\n\n\
                     `ref T` is a raw reference to type T. Used for FFI and low-level memory access.\n\
                     `ref void` is an untyped raw pointer."
                     .to_string(),
@@ -1125,7 +1125,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "type" {
             return Some(HoverResult {
                 signature: "type".to_string(),
-                documentation: "**type** — Type definition keyword.\n\n\
+                documentation: "type — Type definition keyword.\n\n\
                     `type Foo = { x: i32, y: mut i32 }` defines a type structure."
                     .to_string(),
             });
@@ -1133,7 +1133,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "union" {
             return Some(HoverResult {
                 signature: "union".to_string(),
-                documentation: "**union** — Tagged union type definition.\n\n\
+                documentation: "union — Tagged union type definition.\n\n\
                     `union U = { Int32(i32) | Str(String) }` defines a sum type with named variants."
                     .to_string(),
             });
@@ -1141,7 +1141,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "enum" {
             return Some(HoverResult {
                 signature: "enum".to_string(),
-                documentation: "**enum** — Enumeration type definition.\n\n\
+                documentation: "enum — Enumeration type definition.\n\n\
                     `enum E = { A, B, C }` defines a C-like enum."
                     .to_string(),
             });
@@ -1149,7 +1149,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "val" {
             return Some(HoverResult {
                 signature: "val".to_string(),
-                documentation: "**val** — Immutable-by-default value binding.\n\n\
+                documentation: "val — Immutable-by-default value binding.\n\n\
                     `val x = 10` or `val x: i32 = 10`"
                     .to_string(),
             });
@@ -1157,7 +1157,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "match" {
             return Some(HoverResult {
                 signature: "match".to_string(),
-                documentation: "**match** — Pattern matching expression.\n\n\
+                documentation: "match — Pattern matching expression.\n\n\
                     Supports `some x`, `ok v`, `err e`, type patterns, string patterns, \
                     constructor patterns with destructuring, and `else` as catch-all."
                     .to_string(),
@@ -1166,7 +1166,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "some" {
             return Some(HoverResult {
                 signature: "some".to_string(),
-                documentation: "**some** — The `some` variant of the `option[T]` type.\n\n\
+                documentation: "some — The `some` variant of the `option[T]` type.\n\n\
                     Used to wrap a value: `some 10`"
                     .to_string(),
             });
@@ -1174,7 +1174,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "none" {
             return Some(HoverResult {
                 signature: "none".to_string(),
-                documentation: "**none** — The `none` variant of the `option[T]` type.\n\n\
+                documentation: "none — The `none` variant of the `option[T]` type.\n\n\
                     Represents absence of a value."
                     .to_string(),
             });
@@ -1182,7 +1182,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "ok" {
             return Some(HoverResult {
                 signature: "ok".to_string(),
-                documentation: "**ok** — The `ok` variant of the `result[T, E]` type.\n\n\
+                documentation: "ok — The `ok` variant of the `result[T, E]` type.\n\n\
                     Used to wrap a success value: `ok 42`"
                     .to_string(),
             });
@@ -1190,7 +1190,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "err" {
             return Some(HoverResult {
                 signature: "err".to_string(),
-                documentation: "**err** — The `err` variant of the `result[T, E]` type.\n\n\
+                documentation: "err — The `err` variant of the `result[T, E]` type.\n\n\
                     Used to wrap an error value: `err ParseError.Empty`"
                     .to_string(),
             });
@@ -1198,7 +1198,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "option" {
             return Some(HoverResult {
                 signature: "option[T]".to_string(),
-                documentation: "**option[T]** — Optional type.\n\n\
+                documentation: "option[T] — Optional type.\n\n\
                     Either `some value` or `none`."
                     .to_string(),
             });
@@ -1206,7 +1206,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "result" {
             return Some(HoverResult {
                 signature: "result[T, E]".to_string(),
-                documentation: "**result[T, E]** — Result type for fallible operations.\n\n\
+                documentation: "result[T, E] — Result type for fallible operations.\n\n\
                     Either `ok value` or `err error`.\n\
                     Supports `?` propagation operator."
                     .to_string(),
@@ -1215,7 +1215,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "when" {
             return Some(HoverResult {
                 signature: "when".to_string(),
-                documentation: "**when** — Conditional compilation.\n\n\
+                documentation: "when — Conditional compilation.\n\n\
                     `when linux { ... }` — only compiled on Linux.\n\
                     Supported platforms: windows, linux, darwin, dragonflybsd, freebsd, openbsd, netbsd."
                     .to_string(),
@@ -1224,7 +1224,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "extern" {
             return Some(HoverResult {
                 signature: "extern".to_string(),
-                documentation: "**extern** — External FFI declaration.\n\n\
+                documentation: "extern — External FFI declaration.\n\n\
                     `extern (C) fn malloc(size: usize) ref void! = \"malloc\"`\n\
                     All extern functions must have `!` on their return type (they are inherently untrusted)."
                     .to_string(),
@@ -1233,7 +1233,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "pub" {
             return Some(HoverResult {
                 signature: "pub".to_string(),
-                documentation: "**pub** — Public visibility modifier.\n\n\
+                documentation: "pub — Public visibility modifier.\n\n\
                     Makes a function or type accessible from other modules."
                     .to_string(),
             });
@@ -1241,7 +1241,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "return" {
             return Some(HoverResult {
                 signature: "return".to_string(),
-                documentation: "**return** — Return from the current function.\n\n\
+                documentation: "return — Return from the current function.\n\n\
                     `return expr` or just `return` for void functions."
                     .to_string(),
             });
@@ -1249,7 +1249,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "if" {
             return Some(HoverResult {
                 signature: "if".to_string(),
-                documentation: "**if** — Conditional expression.\n\n\
+                documentation: "if — Conditional expression.\n\n\
                     Supports `elif` and `else` branches."
                     .to_string(),
             });
@@ -1257,8 +1257,8 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "for" {
             return Some(HoverResult {
                 signature: "for".to_string(),
-                documentation: "**for** — Loop construct.\n\n\
-                    - C-style: `for i = 0; i < 10; i++ { ... }`\n\
+                documentation: "for — Loop construct.\n\n\
+                    - Traditional: `for i = 0; i < 10; i++ { ... }`\n\
                     - For-in: `for x in xs { ... }`\n\
                     - Infinite: `for { ... }`"
                     .to_string(),
@@ -1267,20 +1267,20 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "break" {
             return Some(HoverResult {
                 signature: "break".to_string(),
-                documentation: "**break** — Exit the current loop.".to_string(),
+                documentation: "break — Exit the current loop.".to_string(),
             });
         }
         if word == "continue" {
             return Some(HoverResult {
                 signature: "continue".to_string(),
-                documentation: "**continue** — Skip to the next iteration of the current loop."
+                documentation: "continue — Skip to the next iteration of the current loop."
                     .to_string(),
             });
         }
         if word == "use" {
             return Some(HoverResult {
                 signature: "use".to_string(),
-                documentation: "**use** — Import a module.\n\n\
+                documentation: "use — Import a module.\n\n\
                     `val std = use(\"std\")` imports the standard library.\n\
                     `val mod = use(\"./submod/sub.sx\")` imports a relative file."
                     .to_string(),
@@ -1289,7 +1289,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "test" {
             return Some(HoverResult {
                 signature: "test".to_string(),
-                documentation: "**test** — Test block.\n\n\
+                documentation: "test — Test block.\n\n\
                     Contains assertions that are run during testing."
                     .to_string(),
             });
@@ -1297,7 +1297,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "assert" {
             return Some(HoverResult {
                 signature: "assert".to_string(),
-                documentation: "**assert** — Runtime assertion.\n\n\
+                documentation: "assert — Runtime assertion.\n\n\
                     `assert expr` — panics if expr is false."
                     .to_string(),
             });
@@ -1305,7 +1305,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "defer" {
             return Some(HoverResult {
                 signature: "defer".to_string(),
-                documentation: "**defer** — Deferred execution.\n\n\
+                documentation: "defer — Deferred execution.\n\n\
                     `defer { ... }` — code runs when the current scope exits."
                     .to_string(),
             });
@@ -1313,19 +1313,19 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "void" {
             return Some(HoverResult {
                 signature: "void".to_string(),
-                documentation: "**void** — Unit type. Represents no value / no return.".to_string(),
+                documentation: "void — Unit type. Represents no value / no return.".to_string(),
             });
         }
         if word == "bool" {
             return Some(HoverResult {
                 signature: "bool".to_string(),
-                documentation: "**bool** — Boolean type. Values: `true` or `false`.".to_string(),
+                documentation: "bool — Boolean type. Values: `true` or `false`.".to_string(),
             });
         }
         if word == "deref" {
             return Some(HoverResult {
                 signature: "deref".to_string(),
-                documentation: "**deref** — Dereference a raw pointer.\n\n\
+                documentation: "deref — Dereference a raw pointer.\n\n\
                     `deref(ptr) = 42` writes 42 to the memory pointed to by `ptr`."
                     .to_string(),
             });
@@ -1333,7 +1333,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "addr" {
             return Some(HoverResult {
                 signature: "addr".to_string(),
-                documentation: "**addr** — Take the address of a value.\n\n\
+                documentation: "addr — Take the address of a value.\n\n\
                     `addr(x)` returns a raw reference to `x`."
                     .to_string(),
             });
@@ -1416,7 +1416,7 @@ pub fn signature_help_at(
             if !doc.is_empty() {
                 doc.push_str("\n\n");
             }
-            doc.push_str("⚠️ **Untrusted function**");
+            doc.push_str("(!) Untrusted function");
         }
 
         let active = if active_param < param_count {
