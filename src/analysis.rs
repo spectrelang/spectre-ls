@@ -45,7 +45,7 @@ pub struct Scope {
 
 #[derive(Debug, Clone)]
 pub enum IdentContext {
-    FunctionCall,
+    FunctionCall(String),
     FunctionDef,
     TypeRef,
     VariableDef,
@@ -321,7 +321,7 @@ fn walk_expr(
     match expr {
         Expr::Ident(name, span) => {
             let ctx = if fn_by_name.contains_key(name) {
-                IdentContext::FunctionCall
+                IdentContext::FunctionCall(name.clone())
             } else if type_defs.contains_key(name) {
                 IdentContext::TypeRef
             } else {
@@ -644,7 +644,65 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
     for (span, ctx) in &analysis.ident_spans {
         if offset >= span.start && offset < span.end {
             match ctx {
-                IdentContext::FunctionCall | IdentContext::FunctionDef => {
+                IdentContext::FunctionCall(fn_name) => {
+                    if let Some(f) = analysis.fn_by_name.get(fn_name) {
+                        let ret_display = if f.returns_untrusted {
+                            format!("{}!", f.return_type.display())
+                        } else {
+                            f.return_type.display()
+                        };
+
+                        let mut sig = format!(
+                            "fn {}({}) -> {}",
+                            f.name,
+                            f.params
+                                .iter()
+                                .map(|p| format!("{}: {}", p.name, p.ty.display()))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            ret_display
+                        );
+
+                        if f.returns_untrusted {
+                            sig.push_str("\n\n(!) **UNTRUSTED FUNCTION** — may have unintended side-effects and bypasses the trust system.");
+                        }
+
+                        let mut doc = f.doc_comments.join("\n");
+
+                        if let Some(pre) = &f.pre {
+                            if !pre.conditions.is_empty() {
+                                if !doc.is_empty() {
+                                    doc.push_str("\n\n");
+                                }
+                                let guard_label = if pre.guarded { " (guarded)" } else { "" };
+                                doc.push_str(&format!("**Preconditions{}:**\n", guard_label));
+                                for cond in &pre.conditions {
+                                    let expr_text = expr_source(source, &cond.expr);
+                                    doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
+                                }
+                            }
+                        }
+
+                        if let Some(post) = &f.post {
+                            if !post.conditions.is_empty() {
+                                if !doc.is_empty() {
+                                    doc.push_str("\n\n");
+                                }
+                                doc.push_str("**Postconditions:**\n");
+                                for cond in &post.conditions {
+                                    let expr_text = expr_source(source, &cond.expr);
+                                    doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_text));
+                                }
+                            }
+                        }
+
+                        return Some(HoverResult {
+                            signature: sig,
+                            documentation: doc,
+                        });
+                    }
+                }
+                IdentContext::FunctionDef => {
                     if let Some(f) = analysis
                         .fn_by_name
                         .values()
@@ -1648,7 +1706,12 @@ pub fn goto_definition(analysis: &DocumentAnalysis, offset: usize) -> Option<Spa
     for (span, ctx) in &analysis.ident_spans {
         if offset >= span.start && offset < span.end {
             match ctx {
-                IdentContext::FunctionCall | IdentContext::FunctionDef => {
+                IdentContext::FunctionCall(fn_name) => {
+                    if let Some(f) = analysis.fn_by_name.get(fn_name) {
+                        return Some(f.name_span.clone());
+                    }
+                }
+                IdentContext::FunctionDef => {
                     let src: Vec<char> = analysis.module.source.chars().collect();
                     if span.start < src.len() {
                         let name: String =
@@ -1765,19 +1828,14 @@ pub fn type_at(analysis: &DocumentAnalysis, offset: usize) -> Option<String> {
                         }
                     }
                 }
-                IdentContext::FunctionCall => {
-                    let src: Vec<char> = analysis.module.source.chars().collect();
-                    if span.start < src.len() {
-                        let name: String =
-                            src[span.start..span.end.min(src.len())].iter().collect();
-                        if let Some(f) = analysis.fn_by_name.get(&name) {
-                            let ret = if f.returns_untrusted {
-                                format!("{}!", f.return_type.display())
-                            } else {
-                                f.return_type.display()
-                            };
-                            return Some(ret);
-                        }
+                IdentContext::FunctionCall(fn_name) => {
+                    if let Some(f) = analysis.fn_by_name.get(fn_name) {
+                        let ret = if f.returns_untrusted {
+                            format!("{}!", f.return_type.display())
+                        } else {
+                            f.return_type.display()
+                        };
+                        return Some(ret);
                     }
                 }
                 IdentContext::FieldAccess => {
