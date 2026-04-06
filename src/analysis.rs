@@ -160,7 +160,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
             }
             Item::TypeDef(td) => {
                 let kind_str = match &td.kind {
-                    TypeDefKind::Struct(_) => "struct",
+                    TypeDefKind::Struct(_) => "type",
                     TypeDefKind::Union(_) => "union",
                     TypeDefKind::UnionConstruct(_) => "union (constructors)",
                     TypeDefKind::Enum(_) => "enum",
@@ -1645,7 +1645,7 @@ pub fn document_symbols(analysis: &DocumentAnalysis) -> Vec<DocumentSymbol> {
                 }
 
                 let kind_label = match &td.kind {
-                    TypeDefKind::Struct(_) => "struct",
+                    TypeDefKind::Struct(_) => "type",
                     TypeDefKind::Union(_) => "union",
                     TypeDefKind::UnionConstruct(_) => "union",
                     TypeDefKind::Enum(_) => "enum",
