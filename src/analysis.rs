@@ -1014,7 +1014,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
         if word == "val" {
             return Some(HoverResult {
                 signature: "val".to_string(),
-                documentation: "**val** — Immutable value binding.\n\n\
+                documentation: "**val** — Immutable-by-default value binding.\n\n\
                     `val x = 10` or `val x: i32 = 10`"
                     .to_string(),
             });
@@ -1881,7 +1881,7 @@ pub fn completions() -> Vec<CompletionItem> {
         },
         CompletionItem {
             label: "val".into(),
-            detail: "Immutable value binding".into(),
+            detail: "Immutable-by-default value binding".into(),
             kind: lsp_types::CompletionItemKind::KEYWORD,
         },
         CompletionItem {
