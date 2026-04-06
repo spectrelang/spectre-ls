@@ -48,7 +48,7 @@ pub enum IdentContext {
     FunctionCall(String),
     FunctionDef,
     TypeRef,
-    VariableDef,
+    VariableDef(String, String), // name, type_str
     VariableRef,
     Parameter,
     FieldAccess,
@@ -146,7 +146,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                 };
                 symbols.push(sym.clone());
 
-                for offset in f.span.range() {
+                for offset in f.name_span.range() {
                     symbol_at.insert(offset, sym.clone());
                 }
 
@@ -176,7 +176,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                 };
                 symbols.push(sym.clone());
 
-                for offset in td.span.range() {
+                for offset in td.name_span.range() {
                     symbol_at.insert(offset, sym.clone());
                 }
 
@@ -287,6 +287,23 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     }
 
     let var_scopes = build_scopes(&module);
+
+    for (span, ctx) in &ident_spans {
+        if let IdentContext::VariableRef = ctx {
+            let src: Vec<char> = source.chars().collect();
+            if span.start < src.len() {
+                let name: String = src[span.start..span.end.min(src.len())].iter().collect();
+                for scope in &var_scopes {
+                    if span.start >= scope.start && span.start < scope.end {
+                        if let Some((_, def_span)) = scope.variables.get(&name) {
+                            resolves_to.insert(span.clone(), def_span.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     DocumentAnalysis {
         module,
@@ -515,8 +532,11 @@ fn walk_expr(
 
 fn walk_pattern(pattern: &Pattern, ident_spans: &mut Vec<(Span, IdentContext)>) {
     match pattern {
-        Pattern::Ident(_, span) => {
-            ident_spans.push((span.clone(), IdentContext::VariableDef));
+        Pattern::Ident(name, span) => {
+            ident_spans.push((
+                span.clone(),
+                IdentContext::VariableDef(name.clone(), "pattern".to_string()),
+            ));
         }
         Pattern::SomePat(inner, _) | Pattern::OkPat(inner, _) | Pattern::ErrPat(inner, _) => {
             walk_pattern(inner, ident_spans);
@@ -547,8 +567,15 @@ fn walk_stmt(
     resolves_to: &mut HashMap<Span, Span>,
 ) {
     match stmt {
-        Stmt::Let(_, ty, expr, span, _) => {
-            ident_spans.push((span.clone(), IdentContext::VariableDef));
+        Stmt::Let(name, ty, expr, span, _) => {
+            let type_str = ty
+                .as_ref()
+                .map(|t| t.display())
+                .unwrap_or_else(|| "inferred".to_string());
+            ident_spans.push((
+                span.clone(),
+                IdentContext::VariableDef(name.clone(), type_str),
+            ));
             if let Some(t) = ty {
                 ident_spans.push((t.span(), IdentContext::TypeRef));
             }
@@ -615,21 +642,111 @@ fn build_scopes(module: &Module) -> Vec<Scope> {
 }
 
 fn collect_vars_from_expr(expr: &Expr, vars: &mut HashMap<String, (String, Span)>) {
-    if let Expr::Block(stmts, span) = expr {
-        for stmt in stmts {
-            if let Stmt::Let(name, ty, _, let_span, _) = stmt {
-                let type_str = ty
-                    .as_ref()
-                    .map(|t| t.display())
-                    .unwrap_or_else(|| "inferred".to_string());
-                vars.insert(name.clone(), (type_str, let_span.clone()));
-            }
-            match stmt {
-                Stmt::Expr(e, _) => collect_vars_from_expr(e, vars),
-                Stmt::Assign(_, rhs, _) => collect_vars_from_expr(rhs, vars),
-                _ => {}
+    match expr {
+        Expr::Block(stmts, _) => {
+            for stmt in stmts {
+                if let Stmt::Let(name, ty, _, let_span, _) = stmt {
+                    let type_str = ty
+                        .as_ref()
+                        .map(|t| t.display())
+                        .unwrap_or_else(|| "inferred".to_string());
+                    vars.insert(name.clone(), (type_str, let_span.clone()));
+                }
+                match stmt {
+                    Stmt::Expr(e, _) => collect_vars_from_expr(e, vars),
+                    Stmt::Assign(_, rhs, _) => collect_vars_from_expr(rhs, vars),
+                    Stmt::Let(_, _, init, _, _) => collect_vars_from_expr(init, vars),
+                    Stmt::Use(_, _, _) => {}
+                }
             }
         }
+        Expr::If(cond, then, else_opt, _) => {
+            collect_vars_from_expr(cond, vars);
+            collect_vars_from_expr(then, vars);
+            if let Some(e) = else_opt {
+                collect_vars_from_expr(e, vars);
+            }
+        }
+        Expr::ForLoop(_, cond, body, _) => {
+            collect_vars_from_expr(cond, vars);
+            collect_vars_from_expr(body, vars);
+        }
+        Expr::Match(target, arms, _) => {
+            collect_vars_from_expr(target, vars);
+            for arm in arms {
+                collect_vars_from_expr(&arm.body, vars);
+            }
+        }
+        Expr::Call(callee, args, _) => {
+            collect_vars_from_expr(callee, vars);
+            for arg in args {
+                collect_vars_from_expr(arg, vars);
+            }
+        }
+        Expr::MethodCall(obj, _, args, _) => {
+            collect_vars_from_expr(obj, vars);
+            for arg in args {
+                collect_vars_from_expr(arg, vars);
+            }
+        }
+        Expr::FieldAccess(obj, _, _) => {
+            collect_vars_from_expr(obj, vars);
+        }
+        Expr::Index(arr, idx, _) => {
+            collect_vars_from_expr(arr, vars);
+            collect_vars_from_expr(idx, vars);
+        }
+        Expr::BinaryOp(left, _, right, _) => {
+            collect_vars_from_expr(left, vars);
+            collect_vars_from_expr(right, vars);
+        }
+        Expr::UnaryOp(_, operand, _) => {
+            collect_vars_from_expr(operand, vars);
+        }
+        Expr::Cast(target, _, _) => {
+            collect_vars_from_expr(target, vars);
+        }
+        Expr::Trust(inner, _) => {
+            collect_vars_from_expr(inner, vars);
+        }
+        Expr::Return(Some(inner), _) => {
+            collect_vars_from_expr(inner, vars);
+        }
+        Expr::Return(None, _) => {}
+        Expr::StructLit(fields, _) => {
+            for (_, field_expr) in fields {
+                collect_vars_from_expr(field_expr, vars);
+            }
+        }
+        Expr::ArrayLit(elements, _) => {
+            for elem in elements {
+                collect_vars_from_expr(elem, vars);
+            }
+        }
+        Expr::SomeVariant(inner, _) | Expr::OkVariant(inner, _) | Expr::ErrVariant(inner, _) => {
+            collect_vars_from_expr(inner, vars);
+        }
+        Expr::WhenExpr(_, body, _) => {
+            collect_vars_from_expr(body, vars);
+        }
+        Expr::Deref(inner, _) | Expr::AddrOf(inner, _) | Expr::Propagate(inner, _) => {
+            collect_vars_from_expr(inner, vars);
+        }
+        Expr::Grouped(inner, _) => {
+            collect_vars_from_expr(inner, vars);
+        }
+        Expr::Intrinsic(_, args, _) => {
+            for arg in args {
+                collect_vars_from_expr(arg, vars);
+            }
+        }
+        // Leaf expressions don't contain nested blocks
+        Expr::Ident(_, _)
+        | Expr::IntLiteral(_, _)
+        | Expr::FloatLiteral(_, _)
+        | Expr::StringLiteral(_, _)
+        | Expr::BoolLiteral(_, _)
+        | Expr::NoneLiteral(_) => {}
     }
 }
 
@@ -836,16 +953,34 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                     }
                 }
                 IdentContext::VariableRef => {
-                    for scope in &analysis.var_scopes {
-                        if offset >= scope.start && offset < scope.end {
-                            for (name, (type_str, def_span)) in &scope.variables {
-                                let src_chars: Vec<char> = source.chars().collect();
-                                if offset < src_chars.len() {
-                                    let _ = def_span; // suppress warning
+                    let src: Vec<char> = source.chars().collect();
+                    if span.start < src.len() {
+                        let name: String =
+                            src[span.start..span.end.min(src.len())].iter().collect();
+                        for scope in &analysis.var_scopes {
+                            if offset >= scope.start && offset < scope.end {
+                                if let Some((type_str, def_span)) = scope.variables.get(&name) {
+                                    return Some(HoverResult {
+                                        signature: format!("val {}: {}", name, type_str),
+                                        documentation: format!(
+                                            "Variable defined at line {}",
+                                            source[..def_span.start]
+                                                .chars()
+                                                .filter(|&c| c == '\n')
+                                                .count()
+                                                + 1
+                                        ),
+                                    });
                                 }
                             }
                         }
                     }
+                }
+                IdentContext::VariableDef(name, type_str) => {
+                    return Some(HoverResult {
+                        signature: format!("val {}: {}", name, type_str),
+                        documentation: "Variable definition".to_string(),
+                    });
                 }
                 IdentContext::FieldAccess => {}
                 IdentContext::MethodCall(method_name) => {
@@ -1730,15 +1865,21 @@ pub fn goto_definition(analysis: &DocumentAnalysis, offset: usize) -> Option<Spa
                     }
                 }
                 IdentContext::VariableRef => {
-                    for scope in &analysis.var_scopes {
-                        if offset >= scope.start && offset < scope.end {
-                            for (_, (_, def_span)) in &scope.variables {
-                                if offset >= def_span.start && offset < def_span.end {
+                    let src: Vec<char> = analysis.module.source.chars().collect();
+                    if span.start < src.len() {
+                        let name: String =
+                            src[span.start..span.end.min(src.len())].iter().collect();
+                        for scope in &analysis.var_scopes {
+                            if offset >= scope.start && offset < scope.end {
+                                if let Some((_, def_span)) = scope.variables.get(&name) {
                                     return Some(def_span.clone());
                                 }
                             }
                         }
                     }
+                }
+                IdentContext::VariableDef(_, _) => {
+                    return Some(span.clone());
                 }
                 IdentContext::MethodCall(method_name) => {
                     if let Some(f) = analysis.fn_by_name.get(method_name) {
