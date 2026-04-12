@@ -2094,6 +2094,9 @@ impl Parser {
             while let Some(t) = self.peek_token() {
                 if t.kind == TokenKind::Comment {
                     self.advance();
+                } else if let TokenKind::DocComment(text) = &t.kind {
+                    docs.push(text.clone());
+                    self.advance();
                 } else {
                     break;
                 }

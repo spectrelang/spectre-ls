@@ -76,6 +76,7 @@ pub enum TokenKind {
     BacktickString(String),
     Whitespace,
     Comment,
+    DocComment(String),
     Unknown(char),
 }
 
@@ -298,14 +299,37 @@ impl Lexer {
             let start = self.pos;
             let line = self.line;
             let col = self.col;
-            self.skip_line_comment();
-            return Some(Token {
-                kind: TokenKind::Comment,
-                start,
-                end: self.pos,
-                line,
-                col,
-            });
+            // Check if it's a doc comment (///)
+            let is_doc = self.src.get(self.pos + 2) == Some(&'/');
+            if is_doc {
+                self.advance(); // /
+                self.advance(); // /
+                self.advance(); // /
+                let mut text = String::new();
+                while let Some(c) = self.peek() {
+                    self.advance();
+                    if c == '\n' {
+                        break;
+                    }
+                    text.push(c);
+                }
+                return Some(Token {
+                    kind: TokenKind::DocComment(text.trim_start().to_string()),
+                    start,
+                    end: self.pos,
+                    line,
+                    col,
+                });
+            } else {
+                self.skip_line_comment();
+                return Some(Token {
+                    kind: TokenKind::Comment,
+                    start,
+                    end: self.pos,
+                    line,
+                    col,
+                });
+            }
         }
         if self.peek() == Some('/') && self.peek_next() == Some('*') {
             let start = self.pos;
