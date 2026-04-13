@@ -317,6 +317,87 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     }
 }
 
+// Compute a best effort size in bytes for a Type. Returns None when unknown.
+fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize> {
+    match ty {
+        Type::Named(n, _) => match n.as_str() {
+            "i32" => Some(4),
+            "i64" => Some(8),
+            "u8" => Some(1),
+            "usize" => Some(std::mem::size_of::<usize>()),
+            "f64" => Some(8),
+            "char" => Some(4),
+            "bool" => Some(1),
+            _ => {
+                if let Some(td) = type_defs.get(n) {
+                    size_of_typedef(td, type_defs)
+                } else {
+                    None
+                }
+            }
+        },
+        Type::Generic(_, args, _) => {
+            if args.len() == 1 {
+                size_of_type(&args[0], type_defs)
+            } else {
+                None
+            }
+        }
+        Type::Ref(_, _) => Some(std::mem::size_of::<*const ()>()),
+        Type::Mut(inner, _) => size_of_type(inner, type_defs),
+        Type::Fn(_, _, _) => Some(std::mem::size_of::<usize>()),
+        Type::Unit(_) => Some(0),
+        Type::Bool(_) => Some(1),
+        Type::Never(_) => None,
+    }
+}
+
+fn size_of_typedef(td: &TypeDef, type_defs: &HashMap<String, TypeDef>) -> Option<usize> {
+    match &td.kind {
+        TypeDefKind::Struct(fields) => {
+            let mut total: usize = 0;
+            for f in fields {
+                if let Some(sz) = size_of_type(&f.ty, type_defs) {
+                    total = total.saturating_add(sz);
+                } else {
+                    return None;
+                }
+            }
+            Some(total)
+        }
+        TypeDefKind::Union(types) => {
+            let mut max: usize = 0;
+            for t in types {
+                if let Some(sz) = size_of_type(t, type_defs) {
+                    if sz > max {
+                        max = sz;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Some(max)
+        }
+        TypeDefKind::UnionConstruct(variants) => {
+            let mut max: usize = 0;
+            for v in variants {
+                if let Some(sz) = size_of_type(&v.ty, type_defs) {
+                    if sz > max {
+                        max = sz;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Some(max)
+        }
+        TypeDefKind::Enum(variants) => {
+            let mut max: usize = 0;
+            Some(4 + max)
+        }
+    }
+}
+
 fn expr_source(source: &str, expr: &Expr) -> String {
     let span = expr.span();
     let src: Vec<char> = source.chars().collect();
@@ -933,7 +1014,33 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 )
                             }
                         };
-                        let doc = td.doc_comments.join("\n");
+                        let mut doc = td.doc_comments.join("\n");
+
+                        // attributes
+                        let mut attrs: Vec<String> = Vec::new();
+                        if td.is_pub {
+                            attrs.push("pub".to_string());
+                        }
+                        if td.is_extern {
+                            attrs.push("extern".to_string());
+                        }
+
+                        // size (best-effort)
+                        let size_str = match size_of_typedef(td, &analysis.type_defs) {
+                            Some(s) => format!("{} bytes", s),
+                            None => "unknown".to_string(),
+                        };
+
+                        if !attrs.is_empty() || !size_str.is_empty() {
+                            if !doc.is_empty() {
+                                doc.push_str("\n\n");
+                            }
+                            if !attrs.is_empty() {
+                                doc.push_str(&format!("Attributes: {}\n", attrs.join(", ")));
+                            }
+                            doc.push_str(&format!("Size: {}", size_str));
+                        }
+
                         return Some(HoverResult {
                             signature: kind_str,
                             documentation: doc,

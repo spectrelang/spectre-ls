@@ -4,7 +4,7 @@ mod lexer;
 
 use analysis::*;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 fn main() {
@@ -61,6 +61,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let documents: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     let analyses: Arc<Mutex<HashMap<String, DocumentAnalysis>>> = Arc::new(Mutex::new(HashMap::new()));
+    let (an_tx, an_rx) = mpsc::channel::<(String, String)>();
+    let analyses_worker = Arc::clone(&analyses);
+
+    thread::spawn(move || {
+        for (uri, text) in an_rx.iter() {
+            eprintln!("[spectre-ls] worker analyze start: {}", uri);
+            let analysis = analyze(&text);
+            eprintln!(
+                "[spectre-ls] worker analyze done: {} (symbols={}, funcs={}, types={})",
+                uri,
+                analysis.symbols.len(),
+                analysis.fn_by_name.len(),
+                analysis.type_defs.len()
+            );
+            let mut a = analyses_worker.lock().unwrap();
+            a.insert(uri, analysis);
+        }
+        eprintln!("[spectre-ls] analysis worker exiting");
+    });
 
     eprintln!("[spectre-ls] entering message loop");
 
@@ -109,7 +128,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             lsp_server::Message::Notification(notification) => {
                 eprintln!("[spectre-ls] notification: {}", notification.method);
-                if let Err(e) = handle_notification(&notification, &documents, &analyses) {
+                if let Err(e) = handle_notification(&notification, &documents, &analyses, &an_tx) {
                     eprintln!("[spectre-ls] error handling notification: {}", e);
                 }
             }
@@ -143,6 +162,7 @@ fn handle_notification(
     notification: &lsp_server::Notification,
     documents: &Arc<Mutex<HashMap<String, String>>>,
     analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    sender: &mpsc::Sender<(String, String)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match notification.method.as_str() {
         "textDocument/didOpen" | "textDocument/didChange" => {
@@ -171,21 +191,8 @@ fn handle_notification(
                 docs.insert(uri.clone(), text.clone());
             }
 
-            let analyses_clone = Arc::clone(analyses);
-            let uri_clone = uri.clone();
-            thread::spawn(move || {
-                eprintln!("[spectre-ls] background analyze start: {}", uri_clone);
-                let analysis = analyze(&text);
-                eprintln!(
-                    "[spectre-ls] background analyze done: {} (symbols={}, funcs={}, types={})",
-                    uri_clone,
-                    analysis.symbols.len(),
-                    analysis.fn_by_name.len(),
-                    analysis.type_defs.len()
-                );
-                let mut a = analyses_clone.lock().unwrap();
-                a.insert(uri_clone, analysis);
-            });
+            // send to analysis worker (non-blocking send)
+            let _ = sender.send((uri.clone(), text));
         }
         "textDocument/didClose" => {
             let params: serde_json::Value = serde_json::from_value(notification.params.clone())?;
@@ -344,6 +351,21 @@ fn handle_hover(
             range: None,
         }
     });
+
+    // If no hover info was found, return a simple debug hover so clients can
+    // verify hover is working on this file/position.
+    let result = if result.is_some() {
+        result
+    } else {
+        let debug_contents = lsp_types::Hover {
+            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: "debug: a symbol in this file".to_string(),
+            }),
+            range: None,
+        };
+        Some(debug_contents)
+    };
 
     Some(lsp_server::Response {
         id: req.id.clone(),
