@@ -319,6 +319,11 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
 
 // Compute a best effort size in bytes for a Type. Returns None when unknown.
 fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize> {
+    let mut visited = std::collections::HashSet::new();
+    size_of_type_impl(ty, type_defs, &mut visited)
+}
+
+fn size_of_type_impl(ty: &Type, type_defs: &HashMap<String, TypeDef>, visited: &mut std::collections::HashSet<String>) -> Option<usize> {
     match ty {
         Type::Named(n, _) => match n.as_str() {
             "i32" => Some(4),
@@ -329,8 +334,15 @@ fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize
             "char" => Some(4),
             "bool" => Some(1),
             _ => {
+                if visited.contains(n) {
+                    return None; 
+                }
+
                 if let Some(td) = type_defs.get(n) {
-                    size_of_typedef(td, type_defs)
+                    visited.insert(n.clone());
+                    let result = size_of_typedef_impl(td, type_defs, visited);
+                    visited.remove(n);
+                    result
                 } else {
                     None
                 }
@@ -338,13 +350,13 @@ fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize
         },
         Type::Generic(_, args, _) => {
             if args.len() == 1 {
-                size_of_type(&args[0], type_defs)
+                size_of_type_impl(&args[0], type_defs, visited)
             } else {
                 None
             }
         }
         Type::Ref(_, _) => Some(std::mem::size_of::<*const ()>()),
-        Type::Mut(inner, _) => size_of_type(inner, type_defs),
+        Type::Mut(inner, _) => size_of_type_impl(inner, type_defs, visited),
         Type::Fn(_, _, _) => Some(std::mem::size_of::<usize>()),
         Type::Unit(_) => Some(0),
         Type::Bool(_) => Some(1),
@@ -353,11 +365,16 @@ fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize
 }
 
 fn size_of_typedef(td: &TypeDef, type_defs: &HashMap<String, TypeDef>) -> Option<usize> {
+    let mut visited = std::collections::HashSet::new();
+    size_of_typedef_impl(td, type_defs, &mut visited)
+}
+
+fn size_of_typedef_impl(td: &TypeDef, type_defs: &HashMap<String, TypeDef>, visited: &mut std::collections::HashSet<String>) -> Option<usize> {
     match &td.kind {
         TypeDefKind::Struct(fields) => {
             let mut total: usize = 0;
             for f in fields {
-                if let Some(sz) = size_of_type(&f.ty, type_defs) {
+                if let Some(sz) = size_of_type_impl(&f.ty, type_defs, visited) {
                     total = total.saturating_add(sz);
                 } else {
                     return None;
@@ -368,7 +385,7 @@ fn size_of_typedef(td: &TypeDef, type_defs: &HashMap<String, TypeDef>) -> Option
         TypeDefKind::Union(types) => {
             let mut max: usize = 0;
             for t in types {
-                if let Some(sz) = size_of_type(t, type_defs) {
+                if let Some(sz) = size_of_type_impl(t, type_defs, visited) {
                     if sz > max {
                         max = sz;
                     }
@@ -1014,9 +1031,8 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 }
                             };
                             let mut doc = td.doc_comments.join("\n");
-
-                            // attributes
                             let mut attrs: Vec<String> = Vec::new();
+                            
                             if td.is_pub {
                                 attrs.push("pub".to_string());
                             }
@@ -1024,7 +1040,6 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 attrs.push("extern".to_string());
                             }
 
-                            // size (best-effort)
                             let size_str = match size_of_typedef(td, &analysis.type_defs) {
                                 Some(s) => format!("{} bytes", s),
                                 None => "unknown".to_string(),
