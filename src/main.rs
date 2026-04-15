@@ -499,7 +499,7 @@ fn handle_signature_help(
     );
 
     let analysis = get_analysis(&uri, documents, analyses)?;
-    let sig_help = signature_help_at(&analysis, offset);
+    let sig_help = signature_help_at(&analysis, offset, &source);
 
     eprintln!(
         "[spectre-ls] signature help result: {:?}",

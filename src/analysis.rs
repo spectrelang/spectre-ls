@@ -1067,16 +1067,10 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                         for scope in &analysis.var_scopes {
                             if offset >= scope.start && offset < scope.end {
                                 if let Some((type_str, def_span)) = scope.variables.get(&name) {
+                                    let doc = extract_doc_comments_before(source, def_span.start);
                                     return Some(HoverResult {
                                         signature: format!("val {}: {}", name, type_str),
-                                        documentation: format!(
-                                            "Variable defined at line {}",
-                                            source[..def_span.start]
-                                                .chars()
-                                                .filter(|&c| c == '\n')
-                                                .count()
-                                                + 1
-                                        ),
+                                        documentation: doc,
                                     });
                                 }
                             }
@@ -1084,9 +1078,10 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                     }
                 }
                 IdentContext::VariableDef(name, type_str) => {
+                    let doc = extract_doc_comments_before(source, span.start);
                     return Some(HoverResult {
                         signature: format!("val {}: {}", name, type_str),
-                        documentation: "Variable definition".to_string(),
+                        documentation: doc,
                     });
                 }
                 IdentContext::FieldAccess => {}
@@ -1450,6 +1445,42 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
     None
 }
 
+/// Scan source text backward from `pos` and collect any `///` doc-comment
+/// lines that immediately precede the token at that position.  Lines that are
+/// blank or contain only regular comments (`//`) between the doc lines and the
+/// declaration break the chain.
+fn extract_doc_comments_before(source: &str, pos: usize) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    if pos == 0 || pos > chars.len() {
+        return String::new();
+    }
+
+    let mut lines: Vec<&str> = source.lines().collect();
+    let char_up_to_pos: String = chars[..pos].iter().collect();
+    let decl_line = char_up_to_pos.chars().filter(|&c| c == '\n').count();
+
+    if decl_line == 0 {
+        return String::new();
+    }
+
+    let mut doc_lines: Vec<String> = Vec::new();
+    let mut line_idx = decl_line as i64 - 1;
+
+    while line_idx >= 0 {
+        let line = lines[line_idx as usize].trim();
+        if line.starts_with("///") {
+            let text = line.trim_start_matches('/').trim_start().to_string();
+            doc_lines.push(text);
+            line_idx -= 1;
+        } else {
+            break;
+        }
+    }
+
+    doc_lines.reverse();
+    doc_lines.join("\n")
+}
+
 fn extract_word_at(chars: &[char], offset: usize) -> String {
     if offset >= chars.len() {
         return String::new();
@@ -1480,280 +1511,140 @@ pub struct HoverResult {
 pub fn signature_help_at(
     analysis: &DocumentAnalysis,
     offset: usize,
+    source: &str,
 ) -> Option<SignatureHelpResult> {
-    let mut best: Option<(Function, usize)> = None;
+    let (fn_name, active_param) = find_call_context_in_source(source, offset)?;
 
-    for f in analysis.fn_by_name.values() {
-        if let Some(body) = &f.body {
-            if let Some((fn_span, arg_idx)) = find_call_at(body, offset) {
-                best = Some((f.clone(), arg_idx));
-            }
-        }
-    }
+    let func = analysis.fn_by_name.get(&fn_name)?;
 
-    for f in analysis.fn_by_name.values() {
-        if let Some((_, arg_idx)) = find_call_in_fn(f, offset) {
-            best = Some((f.clone(), arg_idx));
-        }
-    }
+    let ret_display = if func.returns_untrusted {
+        format!("{}!", func.return_type.display())
+    } else {
+        func.return_type.display()
+    };
 
-    if let Some((func, active_param)) = best {
-        let param_count = func.params.len();
-        let label = format!(
-            "{}({})",
-            func.name,
-            func.params
-                .iter()
-                .map(|p| format!("{}: {}", p.name, p.ty.display()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
-        let parameters: Vec<SignatureParam> = func
-            .params
+    let label = format!(
+        "fn {}({}) -> {}",
+        func.name,
+        func.params
             .iter()
-            .map(|p| SignatureParam {
-                label: format!("{}: {}", p.name, p.ty.display()),
-                documentation: String::new(),
-            })
-            .collect();
+            .map(|p| format!("{}: {}", p.name, p.ty.display()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        ret_display
+    );
 
-        let mut doc = func.doc_comments.join("\n");
-        if func.returns_untrusted {
-            if !doc.is_empty() {
-                doc.push_str("\n\n");
-            }
-            doc.push_str("(!) Untrusted function");
-        }
-
-        let active = if active_param < param_count {
-            active_param
-        } else {
-            param_count.saturating_sub(1)
-        };
-
-        Some(SignatureHelpResult {
-            label,
-            parameters,
-            active_parameter: active,
-            documentation: doc,
+    let parameters: Vec<SignatureParam> = func
+        .params
+        .iter()
+        .map(|p| SignatureParam {
+            label: format!("{}: {}", p.name, p.ty.display()),
+            documentation: String::new(),
         })
+        .collect();
+
+    let mut doc = func.doc_comments.join("\n");
+    if func.returns_untrusted {
+        if !doc.is_empty() {
+            doc.push_str("\n\n");
+        }
+        doc.push_str("(!) Untrusted function");
+    }
+
+    let param_count = func.params.len();
+    let active = if param_count == 0 {
+        0
+    } else if active_param < param_count {
+        active_param
+    } else {
+        param_count - 1
+    };
+
+    Some(SignatureHelpResult {
+        label,
+        parameters,
+        active_parameter: active,
+        documentation: doc,
+    })
+}
+
+/// Walk the source text backward from `offset` to find the innermost function
+/// call the cursor is inside, returning `(function_name, active_param_index)`.
+/// This is done on raw source rather than AST because the parser records the
+/// callee span as the Call node span, making AST-based detection unreliable.
+fn find_call_context_in_source(source: &str, offset: usize) -> Option<(String, usize)> {
+    let chars: Vec<char> = source.chars().collect();
+    let end = offset.min(chars.len());
+
+    let mut depth_paren: i32 = 0;
+    let mut depth_bracket: i32 = 0;
+    let mut depth_brace: i32 = 0;
+    let mut comma_count: usize = 0;
+
+    let mut i = end;
+    while i > 0 {
+        i -= 1;
+        match chars[i] {
+            ')' => depth_paren += 1,
+            '(' => {
+                if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 {
+                    if let Some(fn_name) = extract_ident_before(&chars, i) {
+                        if !is_control_flow_keyword(&fn_name) {
+                            return Some((fn_name, comma_count));
+                        }
+                    }
+                    comma_count = 0;
+                } else {
+                    depth_paren -= 1;
+                }
+            }
+            ']' => depth_bracket += 1,
+            '[' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+            }
+            '}' => depth_brace += 1,
+            '{' => {
+                if depth_brace == 0 {
+                    return None;
+                }
+                depth_brace -= 1;
+            }
+            ',' if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 => {
+                comma_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn extract_ident_before(chars: &[char], pos: usize) -> Option<String> {
+    let mut end = pos;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    if start < end {
+        Some(chars[start..end].iter().collect())
     } else {
         None
     }
 }
 
-fn find_call_in_fn(f: &Function, offset: usize) -> Option<(Span, usize)> {
-    fn search_expr(expr: &Expr, offset: usize) -> Option<(Span, usize)> {
-        match expr {
-            Expr::Call(callee, args, span) => {
-                if offset >= span.start && offset <= span.end {
-                    let arg_idx = count_args_at(expr, offset);
-                    return Some((span.clone(), arg_idx));
-                }
-                for arg in args {
-                    if let Some(r) = search_expr(arg, offset) {
-                        return Some(r);
-                    }
-                }
-                if let Expr::Ident(_, cs) = callee.as_ref() {
-                    if offset >= cs.start && offset < cs.end {
-                        return Some((span.clone(), 0));
-                    }
-                }
-            }
-            Expr::MethodCall(_, _, args, span) => {
-                if offset >= span.start && offset <= span.end {
-                    let arg_idx = count_args_at(expr, offset);
-                    return Some((span.clone(), arg_idx));
-                }
-                for arg in args {
-                    if let Some(r) = search_expr(arg, offset) {
-                        return Some(r);
-                    }
-                }
-            }
-            Expr::Block(stmts, _) => {
-                for stmt in stmts {
-                    if let Some(r) = search_stmt(stmt, offset) {
-                        return Some(r);
-                    }
-                }
-            }
-            Expr::BinaryOp(left, _, right, _) => {
-                if let Some(r) = search_expr(left, offset) {
-                    return Some(r);
-                }
-                if let Some(r) = search_expr(right, offset) {
-                    return Some(r);
-                }
-            }
-            Expr::If(cond, then, else_opt, _) => {
-                if let Some(r) = search_expr(cond, offset) {
-                    return Some(r);
-                }
-                if let Some(r) = search_expr(then, offset) {
-                    return Some(r);
-                }
-                if let Some(e) = else_opt {
-                    if let Some(r) = search_expr(e, offset) {
-                        return Some(r);
-                    }
-                }
-            }
-            Expr::ForLoop(_, header, body, _) => {
-                if let Some(r) = search_expr(header, offset) {
-                    return Some(r);
-                }
-                if let Some(r) = search_expr(body, offset) {
-                    return Some(r);
-                }
-            }
-            Expr::Match(scrutinee, arms, _) => {
-                if let Some(r) = search_expr(scrutinee, offset) {
-                    return Some(r);
-                }
-                for arm in arms {
-                    if let Some(r) = search_expr(&arm.body, offset) {
-                        return Some(r);
-                    }
-                }
-            }
-            Expr::Trust(inner, _) => {
-                if let Some(r) = search_expr(inner, offset) {
-                    return Some(r);
-                }
-            }
-            Expr::Return(Some(e), _) => {
-                if let Some(r) = search_expr(e, offset) {
-                    return Some(r);
-                }
-            }
-            Expr::SomeVariant(e, _) | Expr::OkVariant(e, _) | Expr::ErrVariant(e, _) => {
-                if let Some(r) = search_expr(e, offset) {
-                    return Some(r);
-                }
-            }
-            _ => {}
-        }
-        None
-    }
-
-    f.body.as_ref().and_then(|b| search_expr(b, offset))
-}
-
-fn search_stmt(stmt: &Stmt, offset: usize) -> Option<(Span, usize)> {
-    match stmt {
-        Stmt::Expr(e, _) => search_expr(e, offset),
-        Stmt::Assign(_, rhs, _) => search_expr(rhs, offset),
-        Stmt::Let(_, _, e, _, _) => search_expr(e, offset),
-        _ => None,
-    }
-}
-
-fn search_expr(expr: &Expr, offset: usize) -> Option<(Span, usize)> {
-    match expr {
-        Expr::Call(callee, args, span) => {
-            if offset >= span.start && offset <= span.end {
-                let arg_idx = count_args_at(expr, offset);
-                return Some((span.clone(), arg_idx));
-            }
-            for arg in args {
-                if let Some(r) = search_expr(arg, offset) {
-                    return Some(r);
-                }
-            }
-        }
-        Expr::MethodCall(_, _, args, span) => {
-            if offset >= span.start && offset <= span.end {
-                let arg_idx = count_args_at(expr, offset);
-                return Some((span.clone(), arg_idx));
-            }
-            for arg in args {
-                if let Some(r) = search_expr(arg, offset) {
-                    return Some(r);
-                }
-            }
-        }
-        Expr::Block(stmts, _) => {
-            for stmt in stmts {
-                if let Some(r) = search_stmt(stmt, offset) {
-                    return Some(r);
-                }
-            }
-        }
-        Expr::BinaryOp(left, _, right, _) => {
-            if let Some(r) = search_expr(left, offset) {
-                return Some(r);
-            }
-            if let Some(r) = search_expr(right, offset) {
-                return Some(r);
-            }
-        }
-        Expr::If(cond, then, else_opt, _) => {
-            if let Some(r) = search_expr(cond, offset) {
-                return Some(r);
-            }
-            if let Some(r) = search_expr(then, offset) {
-                return Some(r);
-            }
-            if let Some(e) = else_opt {
-                if let Some(r) = search_expr(e, offset) {
-                    return Some(r);
-                }
-            }
-        }
-        Expr::ForLoop(_, header, body, _) => {
-            if let Some(r) = search_expr(header, offset) {
-                return Some(r);
-            }
-            if let Some(r) = search_expr(body, offset) {
-                return Some(r);
-            }
-        }
-        Expr::Match(scrutinee, arms, _) => {
-            if let Some(r) = search_expr(scrutinee, offset) {
-                return Some(r);
-            }
-            for arm in arms {
-                if let Some(r) = search_expr(&arm.body, offset) {
-                    return Some(r);
-                }
-            }
-        }
-        Expr::Trust(inner, _) => {
-            if let Some(r) = search_expr(inner, offset) {
-                return Some(r);
-            }
-        }
-        Expr::Return(Some(e), _) => {
-            if let Some(r) = search_expr(e, offset) {
-                return Some(r);
-            }
-        }
-        Expr::SomeVariant(e, _) | Expr::OkVariant(e, _) | Expr::ErrVariant(e, _) => {
-            if let Some(r) = search_expr(e, offset) {
-                return Some(r);
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-fn count_args_at(expr: &Expr, offset: usize) -> usize {
-    match expr {
-        Expr::Call(_, _, span) | Expr::MethodCall(_, _, _, span) => {
-            let source: Vec<char> = "".chars().collect();
-            let _ = (source, span);
-            0
-        }
-        _ => 0,
-    }
-}
-
-fn find_call_at(_expr: &Expr, _offset: usize) -> Option<(Span, usize)> {
-    None
+fn is_control_flow_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "elif" | "else" | "for" | "while" | "match" | "when" | "deref" | "addr"
+    )
 }
 
 #[derive(Debug, Clone)]
