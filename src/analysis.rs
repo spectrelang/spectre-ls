@@ -879,6 +879,98 @@ fn collect_vars_from_expr(expr: &Expr, vars: &mut HashMap<String, (String, Span)
     }
 }
 
+pub fn hover_closest(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Option<HoverResult> {
+    let closest = analysis.symbols.iter().min_by_key(|sym| {
+        if offset >= sym.span.start && offset < sym.span.end {
+            0usize
+        } else if offset < sym.span.start {
+            sym.span.start - offset
+        } else {
+            offset - sym.span.end
+        }
+    })?;
+
+    match closest.kind {
+        SymbolKind::Function | SymbolKind::Constant => {
+            if let Some(f) = analysis.fn_by_name.get(&closest.name) {
+                let ret_display = if f.returns_untrusted {
+                    format!("{}!", f.return_type.display())
+                } else {
+                    f.return_type.display()
+                };
+                let sig = format!(
+                    "fn {}({}) -> {}",
+                    f.name,
+                    f.params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, p.ty.display()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ret_display
+                );
+                let mut doc = f.doc_comments.join("\n");
+                if let Some(pre) = &f.pre {
+                    if !pre.conditions.is_empty() {
+                        if !doc.is_empty() { doc.push_str("\n\n"); }
+                        doc.push_str("Preconditions:\n");
+                        for cond in &pre.conditions {
+                            doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_source(source, &cond.expr)));
+                        }
+                    }
+                }
+                if let Some(post) = &f.post {
+                    if !post.conditions.is_empty() {
+                        if !doc.is_empty() { doc.push_str("\n\n"); }
+                        doc.push_str("Postconditions:\n");
+                        for cond in &post.conditions {
+                            doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_source(source, &cond.expr)));
+                        }
+                    }
+                }
+                return Some(HoverResult { signature: sig, documentation: doc });
+            }
+        }
+        SymbolKind::Type => {
+            if let Some(td) = analysis.type_defs.get(&closest.name) {
+                let sig = match &td.kind {
+                    TypeDefKind::Struct(fields) => {
+                        let fields_str = fields.iter()
+                            .map(|f| {
+                                let m = if f.is_mut { "mut " } else { "" };
+                                format!("    {}{}: {}", m, f.name, f.ty.display())
+                            })
+                            .collect::<Vec<_>>().join("\n");
+                        format!("type {} {{\n{}\n}}", td.name, fields_str)
+                    }
+                    TypeDefKind::Union(types) => format!(
+                        "union {} = {}",
+                        td.name,
+                        types.iter().map(|t| t.display()).collect::<Vec<_>>().join(" | ")
+                    ),
+                    TypeDefKind::UnionConstruct(variants) => format!(
+                        "union {} = {{\n{}\n}}",
+                        td.name,
+                        variants.iter().map(|v| format!("    {}({})", v.name, v.ty.display())).collect::<Vec<_>>().join("\n")
+                    ),
+                    TypeDefKind::Enum(variants) => format!(
+                        "enum {} = {{\n{}\n}}",
+                        td.name,
+                        variants.iter().map(|v| format!("    {}", v.name)).collect::<Vec<_>>().join(",\n")
+                    ),
+                };
+                let doc = td.doc_comments.join("\n");
+                return Some(HoverResult { signature: sig, documentation: doc });
+            }
+        }
+        _ => {}
+    }
+
+    Some(HoverResult {
+        signature: closest.type_str.clone().unwrap_or_else(|| closest.name.clone()),
+        documentation: closest.doc.clone(),
+    })
+}
+
 pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Option<HoverResult> {
     if let Some(sym) = analysis.symbol_at.get(&offset) {
         return Some(HoverResult {

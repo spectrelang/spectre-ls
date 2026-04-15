@@ -450,15 +450,11 @@ fn handle_hover(
             (&stdlib_hover.signature, &stdlib_hover.documentation)
         );
         Some(create_hover_response(stdlib_hover))
+    } else if let Some(closest) = hover_closest(&analysis, offset, &source) {
+        eprintln!("[spectre-ls] [HOVER] returning closest-symbol hover");
+        Some(create_hover_response(closest))
     } else {
-        let debug_contents = lsp_types::Hover {
-            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
-                kind: lsp_types::MarkupKind::Markdown,
-                value: "debug: a symbol in this file".to_string(),
-            }),
-            range: None,
-        };
-        Some(debug_contents)
+        None
     };
 
     Some(lsp_server::Response {
