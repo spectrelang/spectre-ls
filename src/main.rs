@@ -285,6 +285,14 @@ fn get_analysis(
     };
 
     if let Some(text) = maybe_text {
+        if text.len() > 100_000 {
+            eprintln!(
+                "[spectre-ls] [GET_ANALYSIS] file too large ({} bytes), waiting for worker analysis",
+                text.len()
+            );
+            return None;
+        }
+
         eprintln!(
             "[spectre-ls] [GET_ANALYSIS] performing synchronous analysis for {} ({} bytes)",
             uri,

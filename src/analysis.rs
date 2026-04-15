@@ -1,6 +1,7 @@
 use crate::ast::*;
 use crate::lexer::Lexer;
 use std::collections::HashMap;
+use crate::ast::Module;
 
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
@@ -61,10 +62,30 @@ pub enum IdentContext {
 }
 
 pub fn analyze(source: &str) -> DocumentAnalysis {
+    let start = std::time::Instant::now();
+    eprintln!("[spectre-ls] [ANALYZE] starting analysis of {} bytes", source.len());
+
+    if source.len() > 200_000 {
+        eprintln!("[spectre-ls] [ANALYZE] file too large, returning empty analysis");
+        return DocumentAnalysis {
+            module: Module { items: vec![], source: "".to_string() },
+            symbols: vec![],
+            ident_spans: vec![],
+            fn_by_name: HashMap::new(),
+            type_defs: HashMap::new(),
+            var_scopes: vec![],
+            symbol_at: HashMap::new(),
+            resolves_to: HashMap::new(),
+        };
+    }
+
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
+    eprintln!("[spectre-ls] [ANALYZE] lexing done in {:?}, {} tokens", start.elapsed(), tokens.len());
+
     let mut parser = Parser::new(tokens, source.to_string());
     let module = parser.parse_module();
+    eprintln!("[spectre-ls] [ANALYZE] parsing done in {:?}, {} items", start.elapsed(), module.items.len());
 
     let mut symbols: Vec<SymbolInfo> = Vec::new();
     let mut fn_by_name: HashMap<String, Function> = HashMap::new();
@@ -73,6 +94,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     let mut symbol_at: HashMap<usize, SymbolInfo> = HashMap::new();
     let mut resolves_to: HashMap<Span, Span> = HashMap::new();
 
+    eprintln!("[spectre-ls] [ANALYZE] starting symbol extraction...");
     for item in &module.items {
         match item {
             Item::Function(f) => {
@@ -286,10 +308,21 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
         }
     }
 
-    let var_scopes = build_scopes(&module);
+    eprintln!("[spectre-ls] [ANALYZE] symbol extraction done in {:?}", start.elapsed());
+    eprintln!("[spectre-ls] [ANALYZE] {} symbols, {} functions, {} types, {} ident_spans",
+        symbols.len(), fn_by_name.len(), type_defs.len(), ident_spans.len());
 
+    eprintln!("[spectre-ls] [ANALYZE] starting scope building...");
+    let var_scopes = build_scopes(&module);
+    eprintln!("[spectre-ls] [ANALYZE] scope building done in {:?}, {} scopes",
+        start.elapsed(), var_scopes.len());
+
+    eprintln!("[spectre-ls] [ANALYZE] starting variable resolution for {} ident spans...", ident_spans.len());
     let src: Vec<char> = source.chars().collect();
-    for (span, ctx) in &ident_spans {
+    for (i, (span, ctx)) in ident_spans.iter().enumerate() {
+        if i % 1000 == 0 {
+            eprintln!("[spectre-ls] [ANALYZE] resolving variable {}/{}", i, ident_spans.len());
+        }
         if let IdentContext::VariableRef = ctx {
             if span.start < src.len() {
                 let name: String = src[span.start..span.end.min(src.len())].iter().collect();
@@ -304,6 +337,8 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
             }
         }
     }
+
+    eprintln!("[spectre-ls] [ANALYZE] analysis complete in {:?}", start.elapsed());
 
     DocumentAnalysis {
         module,
