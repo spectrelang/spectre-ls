@@ -1,6 +1,7 @@
 mod analysis;
 mod ast;
 mod lexer;
+mod stdlib;
 
 use analysis::*;
 use std::collections::HashMap;
@@ -16,6 +17,17 @@ fn main() {
     }));
 
     eprintln!("[spectre-ls] starting...");
+
+    stdlib::init_stdlib();
+    if let Some(lib) = stdlib::get_stdlib() {
+        eprintln!("[spectre-ls] stdlib loaded from: {:?}", lib.std_dir);
+        eprintln!(
+            "[spectre-ls] stdlib modules: {:?}",
+            lib.modules.keys().collect::<Vec<_>>()
+        );
+    } else {
+        eprintln!("[spectre-ls] warning: stdlib not found");
+    }
 
     let result = run();
     match result {
@@ -60,7 +72,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[spectre-ls] initialized, params: {:?}", init_params);
 
     let documents: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let analyses: Arc<Mutex<HashMap<String, DocumentAnalysis>>> = Arc::new(Mutex::new(HashMap::new()));
+    let analyses: Arc<Mutex<HashMap<String, DocumentAnalysis>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let (an_tx, an_rx) = mpsc::channel::<(String, String)>();
     let analyses_worker = Arc::clone(&analyses);
 
@@ -184,7 +197,11 @@ fn handle_notification(
                     .to_string()
             };
 
-            eprintln!("[spectre-ls] scheduling analysis: {} ({} bytes)", uri, text.len());
+            eprintln!(
+                "[spectre-ls] scheduling analysis: {} ({} bytes)",
+                uri,
+                text.len()
+            );
 
             {
                 let mut docs = documents.lock().unwrap();
@@ -240,7 +257,11 @@ fn get_analysis(
     };
 
     if let Some(text) = maybe_text {
-        eprintln!("[spectre-ls] performing synchronous analysis for {} ({} bytes)", uri, text.len());
+        eprintln!(
+            "[spectre-ls] performing synchronous analysis for {} ({} bytes)",
+            uri,
+            text.len()
+        );
         let analysis = analyze(&text);
         let mut a = analyses.lock().unwrap();
         a.insert(uri.to_string(), analysis.clone());
@@ -329,30 +350,14 @@ fn handle_hover(
         hover.as_ref().map(|h| &h.signature)
     );
 
-    let result = hover.map(|h| {
-        let mut contents = String::new();
-        if !h.signature.is_empty() {
-            contents.push_str("```spectre\n");
-            contents.push_str(&h.signature);
-            contents.push_str("\n```\n\n");
-        }
-        if !h.documentation.is_empty() {
-            contents.push_str(&h.documentation);
-        }
-
-        lsp_types::Hover {
-            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
-                kind: lsp_types::MarkupKind::Markdown,
-                value: contents,
-            }),
-            range: None,
-        }
-    });
-
-    // If no hover info was found, return a simple debug hover so clients can
-    // verify hover is working on this file/position.
-    let result = if result.is_some() {
-        result
+    let result = if let Some(h) = hover {
+        Some(create_hover_response(h))
+    } else if let Some(stdlib_hover) = get_stdlib_hover_at_position(&source, offset) {
+        eprintln!(
+            "[spectre-ls] stdlib hover result: {:?}",
+            stdlib_hover.signature
+        );
+        Some(create_hover_response(stdlib_hover))
     } else {
         let debug_contents = lsp_types::Hover {
             contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
@@ -369,6 +374,103 @@ fn handle_hover(
         result: Some(serde_json::to_value(result).unwrap()),
         error: None,
     })
+}
+
+fn create_hover_response(h: HoverResult) -> lsp_types::Hover {
+    let mut contents = String::new();
+    if !h.signature.is_empty() {
+        contents.push_str("```spectre\n");
+        contents.push_str(&h.signature);
+        contents.push_str("\n```\n\n");
+    }
+    if !h.documentation.is_empty() {
+        contents.push_str(&h.documentation);
+    }
+
+    lsp_types::Hover {
+        contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: contents,
+        }),
+        range: None,
+    }
+}
+
+fn get_stdlib_hover_at_position(source: &str, offset: usize) -> Option<HoverResult> {
+    let chars: Vec<char> = source.chars().collect();
+    if offset > chars.len() {
+        return None;
+    }
+
+    let word = extract_word_at(&chars, offset);
+    if word.is_empty() {
+        return None;
+    }
+
+    let (module_prefix, name) = if let Some(dot_pos) = find_last_dot_before_offset(&chars, offset) {
+        let prefix: String = chars[..dot_pos].iter().collect();
+        let name_start = dot_pos + 1;
+        let name_end = offset.min(chars.len());
+        let name: String = chars[name_start..name_end].iter().collect();
+        (prefix, name)
+    } else {
+        (String::new(), word)
+    };
+
+    eprintln!(
+        "[spectre-ls] stdlib hover check: module={:?} name={:?}",
+        module_prefix, name
+    );
+
+    stdlib::get_stdlib_hover(&module_prefix, &name)
+}
+
+fn find_last_dot_before_offset(chars: &[char], offset: usize) -> Option<usize> {
+    let check_until = offset.min(chars.len());
+    for i in (0..check_until).rev() {
+        if chars[i] == '.' {
+            let after_dot = i + 1;
+            if after_dot < chars.len()
+                && (chars[after_dot].is_alphanumeric() || chars[after_dot] == '_')
+            {
+                let before_dot = if i > 0 { i - 1 } else { 0 };
+                if i == 0 || chars[before_dot].is_alphanumeric() || chars[before_dot] == '_' {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_word_at(chars: &[char], offset: usize) -> String {
+    if offset == 0 || offset > chars.len() {
+        return String::new();
+    }
+
+    let pos = if offset == chars.len() {
+        offset - 1
+    } else {
+        offset
+    };
+
+    let mut start = pos;
+    while start > 0
+        && (chars[start - 1].is_alphanumeric()
+            || chars[start - 1] == '_'
+            || chars[start - 1] == '.')
+    {
+        start -= 1;
+    }
+
+    let mut end = pos;
+    while end < chars.len()
+        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
+    {
+        end += 1;
+    }
+
+    chars[start..end].iter().collect()
 }
 
 fn handle_definition(
@@ -506,42 +608,19 @@ fn handle_signature_help(
         sig_help.as_ref().map(|s| &s.label)
     );
 
-    let result = sig_help.map(|sh| {
-        let sig_info = lsp_types::SignatureInformation {
-            label: sh.label.clone(),
-            documentation: Some(lsp_types::Documentation::MarkupContent(
-                lsp_types::MarkupContent {
-                    kind: lsp_types::MarkupKind::Markdown,
-                    value: sh.documentation,
-                },
-            )),
-            parameters: Some(
-                sh.parameters
-                    .into_iter()
-                    .map(|p| lsp_types::ParameterInformation {
-                        label: lsp_types::ParameterLabel::Simple(p.label.clone()),
-                        documentation: if p.documentation.is_empty() {
-                            None
-                        } else {
-                            Some(lsp_types::Documentation::MarkupContent(
-                                lsp_types::MarkupContent {
-                                    kind: lsp_types::MarkupKind::Markdown,
-                                    value: p.documentation,
-                                },
-                            ))
-                        },
-                    })
-                    .collect(),
-            ),
-            active_parameter: Some(sh.active_parameter as u32),
-        };
+    let result = sig_help.map(|sh| create_signature_help_response(sh));
 
-        lsp_types::SignatureHelp {
-            signatures: vec![sig_info],
-            active_signature: None,
-            active_parameter: Some(sh.active_parameter as u32),
-        }
-    });
+    let result = if result.is_some() {
+        result
+    } else if let Some(stdlib_sig) = get_stdlib_signature_help_at_position(&source, offset) {
+        eprintln!(
+            "[spectre-ls] stdlib signature help result: {:?}",
+            stdlib_sig.label
+        );
+        Some(create_signature_help_response(stdlib_sig))
+    } else {
+        None
+    };
 
     Some(lsp_server::Response {
         id: req.id.clone(),
@@ -550,29 +629,474 @@ fn handle_signature_help(
     })
 }
 
+fn create_signature_help_response(sh: SignatureHelpResult) -> lsp_types::SignatureHelp {
+    let sig_info = lsp_types::SignatureInformation {
+        label: sh.label.clone(),
+        documentation: Some(lsp_types::Documentation::MarkupContent(
+            lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: sh.documentation,
+            },
+        )),
+        parameters: Some(
+            sh.parameters
+                .into_iter()
+                .map(|p| lsp_types::ParameterInformation {
+                    label: lsp_types::ParameterLabel::Simple(p.label.clone()),
+                    documentation: if p.documentation.is_empty() {
+                        None
+                    } else {
+                        Some(lsp_types::Documentation::MarkupContent(
+                            lsp_types::MarkupContent {
+                                kind: lsp_types::MarkupKind::Markdown,
+                                value: p.documentation,
+                            },
+                        ))
+                    },
+                })
+                .collect(),
+        ),
+        active_parameter: Some(sh.active_parameter as u32),
+    };
+
+    lsp_types::SignatureHelp {
+        signatures: vec![sig_info],
+        active_signature: None,
+        active_parameter: Some(sh.active_parameter as u32),
+    }
+}
+
+fn get_stdlib_signature_help_at_position(
+    source: &str,
+    offset: usize,
+) -> Option<SignatureHelpResult> {
+    let chars: Vec<char> = source.chars().collect();
+
+    let (module_prefix, fn_name, active_param) = find_call_context_at_offset(&chars, offset)?;
+
+    eprintln!(
+        "[spectre-ls] stdlib signature help check: module={:?} fn={:?} param={}",
+        module_prefix, fn_name, active_param
+    );
+
+    let mut sig = stdlib::get_stdlib_signature_help(&module_prefix, &fn_name)?;
+
+    sig.active_parameter = active_param;
+    Some(sig)
+}
+
+fn find_call_context_at_offset(chars: &[char], offset: usize) -> Option<(String, String, usize)> {
+    let end = offset.min(chars.len());
+
+    let mut depth_paren: i32 = 0;
+    let mut depth_bracket: i32 = 0;
+    let mut comma_count: usize = 0;
+
+    for i in (0..end).rev() {
+        match chars[i] {
+            ')' => depth_paren += 1,
+            '(' => {
+                if depth_paren == 0 && depth_bracket == 0 {
+                    if let Some((module_prefix, fn_name)) = extract_fn_name_before(chars, i) {
+                        return Some((module_prefix, fn_name, comma_count));
+                    }
+                    comma_count = 0;
+                } else {
+                    depth_paren -= 1;
+                }
+            }
+            ']' => depth_bracket += 1,
+            '[' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+            }
+            ',' if depth_paren == 0 && depth_bracket == 0 => {
+                comma_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn extract_fn_name_before(chars: &[char], paren_pos: usize) -> Option<(String, String)> {
+    let mut end = paren_pos;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+
+    let mut start = end;
+    while start > 0
+        && (chars[start - 1].is_alphanumeric()
+            || chars[start - 1] == '_'
+            || chars[start - 1] == '.')
+    {
+        start -= 1;
+    }
+
+    if start >= end {
+        return None;
+    }
+
+    let fn_text: String = chars[start..end].iter().collect();
+
+    let parts: Vec<&str> = fn_text.rsplitn(2, '.').collect();
+    if parts.len() == 2 {
+        Some((parts[1].to_string(), parts[0].to_string()))
+    } else if parts.len() == 1 {
+        Some((String::new(), parts[0].to_string()))
+    } else {
+        None
+    }
+}
+
 fn handle_completion(
     req: &lsp_server::Request,
-    _documents: &Arc<Mutex<HashMap<String, String>>>,
+    documents: &Arc<Mutex<HashMap<String, String>>>,
     _analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
 ) -> Option<lsp_server::Response> {
-    eprintln!("[spectre-ls] completion request");
+    let params: lsp_types::CompletionParams = serde_json::from_value(req.params.clone()).ok()?;
+    let uri = params.text_document_position.text_document.uri.to_string();
+    let position = params.text_document_position.position;
 
-    let items: Vec<lsp_types::CompletionItem> = completions()
-        .into_iter()
-        .map(|c| lsp_types::CompletionItem {
+    let source = {
+        let docs = documents.lock().unwrap();
+        docs.get(&uri)?.clone()
+    };
+    let offset = offset_from_position(&source, position);
+
+    eprintln!("[spectre-ls] completion at uri={} offset={}", uri, offset);
+
+    let (context_completions, stdlib_completions) = get_completions_for_position(&source, offset);
+
+    let mut items: Vec<lsp_types::CompletionItem> = Vec::new();
+
+    for c in context_completions {
+        items.push(lsp_types::CompletionItem {
             label: c.label,
             kind: Some(c.kind),
             detail: Some(c.detail),
             documentation: None,
             ..Default::default()
-        })
-        .collect();
+        });
+    }
+
+    for c in stdlib_completions {
+        items.push(lsp_types::CompletionItem {
+            label: c.label,
+            kind: Some(c.kind),
+            detail: Some(c.detail),
+            documentation: None,
+            ..Default::default()
+        });
+    }
 
     Some(lsp_server::Response {
         id: req.id.clone(),
         result: Some(serde_json::to_value(items).unwrap()),
         error: None,
     })
+}
+
+fn get_completions_for_position(
+    source: &str,
+    offset: usize,
+) -> (Vec<CompletionItem>, Vec<stdlib::CompletionItem>) {
+    let chars: Vec<char> = source.chars().collect();
+
+    let mut trigger_completions = Vec::new();
+    let mut stdlib_completions = Vec::new();
+
+    if let Some(use_completions) = get_use_completions(&chars, offset) {
+        return (trigger_completions, use_completions);
+    }
+
+    let dot_pos = find_trigger_position(&chars, offset, '.');
+    let paren_pos = find_trigger_position(&chars, offset, '(');
+
+    if let Some(dot_idx) = dot_pos {
+        let prefix = extract_completion_prefix(&chars, dot_idx);
+        eprintln!("[spectre-ls] dot completion with prefix: {:?}", prefix);
+
+        if !prefix.is_empty() {
+            if let Some(std_completions) = stdlib::get_stdlib_completions(&prefix) {
+                stdlib_completions = std_completions;
+            }
+        }
+
+        let word_at_cursor = extract_word_at_position(&chars, offset);
+        if !word_at_cursor.is_empty() && (prefix.is_empty() || prefix.ends_with(&word_at_cursor)) {
+            let analysis_completions =
+                get_analysis_completions_for_prefix(source, &word_at_cursor, offset);
+            trigger_completions = analysis_completions;
+        }
+    } else if let Some(paren_idx) = paren_pos {
+        let call_context = extract_call_context(&chars, paren_idx);
+        eprintln!("[spectre-ls] paren completion for call: {:?}", call_context);
+
+        if let Some((module_prefix, fn_name)) = call_context {
+            if let Some(sig_help) = stdlib::get_stdlib_signature_help(&module_prefix, &fn_name) {
+                stdlib_completions = vec![stdlib::CompletionItem {
+                    label: fn_name.clone(),
+                    detail: sig_help.label,
+                    kind: lsp_types::CompletionItemKind::FUNCTION,
+                }];
+            }
+        }
+    } else {
+        trigger_completions = completions();
+    }
+
+    (trigger_completions, stdlib_completions)
+}
+
+fn get_use_completions(chars: &[char], offset: usize) -> Option<Vec<stdlib::CompletionItem>> {
+    let end = offset.min(chars.len());
+
+    let mut paren_depth = 0;
+    let mut found_use_open = false;
+    let mut found_use_paren = false;
+    let mut found_quote = false;
+    let mut use_start = 0;
+
+    for i in (0..end).rev() {
+        match chars[i] {
+            '"' => {
+                if paren_depth == 0 && !found_quote {
+                    found_quote = true;
+                }
+            }
+            ')' => {
+                paren_depth += 1;
+            }
+            '(' => {
+                paren_depth -= 1;
+                if paren_depth == 0 && !found_use_paren {
+                    if i > 0 && chars.get(i - 1).map(|c| *c == 'e').unwrap_or(false) {
+                        found_use_paren = true;
+                        use_start = i.saturating_sub(4);
+                        if i >= 4 {
+                            let maybe_use = &chars[i - 4..i];
+                            if maybe_use == ['u', 's', 'e', '('] {
+                                found_use_open = true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !found_use_open || !found_quote {
+        return None;
+    }
+
+    let quote_pos = chars[..end].iter().rposition(|&c| c == '"')?;
+
+    let mut module_start = quote_pos + 1;
+    while module_start < end && chars[module_start].is_whitespace() {
+        module_start += 1;
+    }
+
+    let prefix: String = chars[module_start..end].iter().collect();
+    eprintln!("[spectre-ls] use completion with prefix: {:?}", prefix);
+
+    let stdlib = stdlib::get_stdlib()?;
+    let mut items = Vec::new();
+
+    if prefix.is_empty() {
+        items.push(stdlib::CompletionItem {
+            label: "std".to_string(),
+            detail: "Standard library".to_string(),
+            kind: lsp_types::CompletionItemKind::MODULE,
+        });
+    } else if prefix == "std" {
+        items.push(stdlib::CompletionItem {
+            label: "std".to_string(),
+            detail: "Standard library".to_string(),
+            kind: lsp_types::CompletionItemKind::MODULE,
+        });
+        for (name, _) in &stdlib.std_module.submodules {
+            items.push(stdlib::CompletionItem {
+                label: format!("std/{}", name),
+                detail: format!("module: {}", name),
+                kind: lsp_types::CompletionItemKind::MODULE,
+            });
+        }
+    } else if let Some(submodule) = prefix.strip_prefix("std/") {
+        let submodule_name = submodule.split('/').next().unwrap_or(submodule);
+        if let Some(module) = stdlib.modules.get(submodule_name) {
+            for (name, _) in &module.submodules {
+                items.push(stdlib::CompletionItem {
+                    label: format!("{}/{}", prefix, name),
+                    detail: format!("submodule: {}", name),
+                    kind: lsp_types::CompletionItemKind::MODULE,
+                });
+            }
+        }
+        if !items.is_empty() || submodule.is_empty() {
+            for (name, _) in &stdlib.std_module.submodules {
+                if name.starts_with(submodule) {
+                    items.push(stdlib::CompletionItem {
+                        label: format!("std/{}", name),
+                        detail: format!("module: {}", name),
+                        kind: lsp_types::CompletionItemKind::MODULE,
+                    });
+                }
+            }
+        }
+    }
+
+    Some(items)
+}
+
+fn find_trigger_position(chars: &[char], offset: usize, trigger: char) -> Option<usize> {
+    if offset == 0 || offset > chars.len() {
+        return None;
+    }
+
+    let check_pos = if offset == chars.len() {
+        offset - 1
+    } else {
+        offset
+    };
+
+    for i in (0..=check_pos).rev() {
+        let c = chars[i];
+        if c == trigger {
+            return Some(i);
+        }
+        if c.is_whitespace() || c == ')' || c == '(' || c == ';' || c == '{' || c == '}' {
+            break;
+        }
+    }
+    None
+}
+
+fn extract_completion_prefix(chars: &[char], dot_pos: usize) -> String {
+    let mut start = dot_pos;
+    while start > 0 && chars[start - 1].is_whitespace() {
+        start -= 1;
+    }
+
+    let mut end = start;
+    while end < chars.len()
+        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
+    {
+        end += 1;
+    }
+
+    chars[start..end].iter().collect()
+}
+
+fn extract_word_at_position(chars: &[char], offset: usize) -> String {
+    if offset == 0 || offset > chars.len() {
+        return String::new();
+    }
+
+    let pos = if offset == chars.len() {
+        offset - 1
+    } else {
+        offset
+    };
+
+    let mut start = pos;
+    while start > 0
+        && (chars[start - 1].is_alphanumeric()
+            || chars[start - 1] == '_'
+            || chars[start - 1] == '.')
+    {
+        start -= 1;
+    }
+
+    let mut end = pos;
+    while end < chars.len()
+        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
+    {
+        end += 1;
+    }
+
+    chars[start..end].iter().collect()
+}
+
+fn extract_call_context(chars: &[char], paren_pos: usize) -> Option<(String, String)> {
+    let mut depth = 0i32;
+    let mut i = paren_pos;
+
+    while i > 0 {
+        i -= 1;
+        match chars[i] {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    let fn_end = i;
+                    while i > 0 && chars[i - 1].is_whitespace() {
+                        i -= 1;
+                    }
+                    let mut fn_start = i;
+                    while fn_start > 0
+                        && (chars[fn_start - 1].is_alphanumeric()
+                            || chars[fn_start - 1] == '_'
+                            || chars[fn_start - 1] == '.')
+                    {
+                        fn_start -= 1;
+                    }
+
+                    let fn_text: String = chars[fn_start..fn_end].iter().collect();
+
+                    let parts: Vec<&str> = fn_text.rsplitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        let fn_name = parts[0].to_string();
+                        let module_prefix = parts[1].to_string();
+                        return Some((module_prefix, fn_name));
+                    } else if parts.len() == 1 {
+                        return Some((String::new(), parts[0].to_string()));
+                    }
+                    return None;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn get_analysis_completions_for_prefix(
+    source: &str,
+    prefix: &str,
+    _offset: usize,
+) -> Vec<CompletionItem> {
+    let analysis = crate::analysis::analyze(source);
+    let mut items = Vec::new();
+
+    for sym in &analysis.symbols {
+        if sym.name.starts_with(prefix) || prefix.is_empty() {
+            let kind = match sym.kind {
+                crate::analysis::SymbolKind::Function => lsp_types::CompletionItemKind::FUNCTION,
+                crate::analysis::SymbolKind::Type => lsp_types::CompletionItemKind::CLASS,
+                crate::analysis::SymbolKind::Variable => lsp_types::CompletionItemKind::VARIABLE,
+                crate::analysis::SymbolKind::Module => lsp_types::CompletionItemKind::MODULE,
+                crate::analysis::SymbolKind::Constant => lsp_types::CompletionItemKind::CONSTANT,
+                crate::analysis::SymbolKind::EnumVariant => {
+                    lsp_types::CompletionItemKind::ENUM_MEMBER
+                }
+                crate::analysis::SymbolKind::Field => lsp_types::CompletionItemKind::FIELD,
+                _ => lsp_types::CompletionItemKind::TEXT,
+            };
+
+            items.push(CompletionItem {
+                label: sym.name.clone(),
+                detail: sym.type_str.clone().unwrap_or_default(),
+                kind,
+            });
+        }
+    }
+
+    items
 }
 
 fn handle_references(

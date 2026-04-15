@@ -963,88 +963,88 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                     }
                 }
                 IdentContext::TypeRef => {
-                    if let Some(td) = analysis
-                        .type_defs
-                        .values()
-                        .find(|td| offset >= td.name_span.start && offset < td.name_span.end)
-                    {
-                        let kind_str = match &td.kind {
-                            TypeDefKind::Struct(fields) => {
-                                let fields_str = fields
-                                    .iter()
-                                    .map(|f| {
-                                        let mut_s = if f.is_mut { "mut " } else { "" };
-                                        format!("    {}{}: {}", mut_s, f.name, f.ty.display())
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                format!("type definition {} {{\n{}\n}}", td.name, fields_str)
-                            }
-                            TypeDefKind::Union(types) => {
-                                format!(
-                                    "union {} = {}",
-                                    td.name,
-                                    types
+                    let src_chars: Vec<char> = source.chars().collect();
+                    if span.start < src_chars.len() && span.end <= src_chars.len() {
+                        let type_name: String = src_chars[span.start..span.end].iter().collect();
+                        if let Some(td) = analysis.type_defs.get(&type_name) {
+                            let kind_str = match &td.kind {
+                                TypeDefKind::Struct(fields) => {
+                                    let fields_str = fields
                                         .iter()
-                                        .map(|t| t.display())
+                                        .map(|f| {
+                                            let mut_s = if f.is_mut { "mut " } else { "" };
+                                            format!("    {}{}: {}", mut_s, f.name, f.ty.display())
+                                        })
                                         .collect::<Vec<_>>()
-                                        .join(" | ")
-                                )
-                            }
-                            TypeDefKind::UnionConstruct(variants) => {
-                                format!(
-                                    "union {} = {{\n{}\n}}",
-                                    td.name,
-                                    variants
-                                        .iter()
-                                        .map(|v| format!("    {}({})", v.name, v.ty.display()))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                )
-                            }
-                            TypeDefKind::Enum(variants) => {
-                                format!(
-                                    "enum {} = {{\n{}\n}}",
-                                    td.name,
-                                    variants
-                                        .iter()
-                                        .map(|v| format!("    {}", v.name))
-                                        .collect::<Vec<_>>()
-                                        .join(",\n")
-                                )
-                            }
-                        };
-                        let mut doc = td.doc_comments.join("\n");
+                                        .join("\n");
+                                    format!("type definition {} {{\n{}\n}}", td.name, fields_str)
+                                }
+                                TypeDefKind::Union(types) => {
+                                    format!(
+                                        "union {} = {}",
+                                        td.name,
+                                        types
+                                            .iter()
+                                            .map(|t| t.display())
+                                            .collect::<Vec<_>>()
+                                            .join(" | ")
+                                    )
+                                }
+                                TypeDefKind::UnionConstruct(variants) => {
+                                    format!(
+                                        "union {} = {{\n{}\n}}",
+                                        td.name,
+                                        variants
+                                            .iter()
+                                            .map(|v| format!("    {}({})", v.name, v.ty.display()))
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    )
+                                }
+                                TypeDefKind::Enum(variants) => {
+                                    format!(
+                                        "enum {} = {{\n{}\n}}",
+                                        td.name,
+                                        variants
+                                            .iter()
+                                            .map(|v| format!("    {}", v.name))
+                                            .collect::<Vec<_>>()
+                                            .join(",\n")
+                                    )
+                                }
+                            };
+                            let mut doc = td.doc_comments.join("\n");
 
-                        // attributes
-                        let mut attrs: Vec<String> = Vec::new();
-                        if td.is_pub {
-                            attrs.push("pub".to_string());
+                            // attributes
+                            let mut attrs: Vec<String> = Vec::new();
+                            if td.is_pub {
+                                attrs.push("pub".to_string());
+                            }
+                            if td.is_extern {
+                                attrs.push("extern".to_string());
+                            }
+
+                            // size (best-effort)
+                            let size_str = match size_of_typedef(td, &analysis.type_defs) {
+                                Some(s) => format!("{} bytes", s),
+                                None => "unknown".to_string(),
+                            };
+
+                            if !attrs.is_empty() || !size_str.is_empty() {
+                                if !doc.is_empty() {
+                                    doc.push_str("\n\n");
+                                }
+                                if !attrs.is_empty() {
+                                    doc.push_str(&format!("Attributes: {}\n", attrs.join(", ")));
+                                }
+                                doc.push_str(&format!("Size: {}", size_str));
+                            }
+
+                            return Some(HoverResult {
+                                signature: kind_str,
+                                documentation: doc,
+                            });
                         }
-                        if td.is_extern {
-                            attrs.push("extern".to_string());
-                        }
-
-                        // size (best-effort)
-                        let size_str = match size_of_typedef(td, &analysis.type_defs) {
-                            Some(s) => format!("{} bytes", s),
-                            None => "unknown".to_string(),
-                        };
-
-                        if !attrs.is_empty() || !size_str.is_empty() {
-                            if !doc.is_empty() {
-                                doc.push_str("\n\n");
-                            }
-                            if !attrs.is_empty() {
-                                doc.push_str(&format!("Attributes: {}\n", attrs.join(", ")));
-                            }
-                            doc.push_str(&format!("Size: {}", size_str));
-                        }
-
-                        return Some(HoverResult {
-                            signature: kind_str,
-                            documentation: doc,
-                        });
                     }
                 }
                 IdentContext::Parameter => {
