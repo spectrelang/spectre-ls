@@ -69,9 +69,11 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     let tokens = lexer.tokenize();
     eprintln!("[spectre-ls] [ANALYZE] lexing done in {:?}, {} tokens", start.elapsed(), tokens.len());
 
+    let parse_start = std::time::Instant::now();
     let mut parser = Parser::new(tokens, source.to_string());
     let module = parser.parse_module();
-    eprintln!("[spectre-ls] [ANALYZE] parsing done in {:?}, {} items", start.elapsed(), module.items.len());
+    eprintln!("[spectre-ls] [ANALYZE] parsing done in {:?} (parse-only: {:?}), {} items",
+        start.elapsed(), parse_start.elapsed(), module.items.len());
 
     let mut symbols: Vec<SymbolInfo> = Vec::new();
     let mut fn_by_name: HashMap<String, Function> = HashMap::new();
@@ -81,7 +83,10 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     let mut resolves_to: HashMap<Span, Span> = HashMap::new();
 
     eprintln!("[spectre-ls] [ANALYZE] starting symbol extraction...");
+    let extract_start = std::time::Instant::now();
+    let mut item_count = 0;
     for item in &module.items {
+        item_count += 1;
         match item {
             Item::Function(f) => {
                 let mut doc = f.doc_comments.join("\n");
@@ -158,7 +163,12 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                     symbol_at.insert(offset, sym.clone());
                 }
 
+                let clone_t = std::time::Instant::now();
                 fn_by_name.insert(f.name.clone(), f.clone());
+                let clone_elapsed = clone_t.elapsed();
+                if clone_elapsed.as_millis() > 10 {
+                    eprintln!("[spectre-ls] [ANALYZE] slow fn clone: {} took {:?}", f.name, clone_elapsed);
+                }
 
                 for param in &f.params {
                     ident_spans.push((param.name_span.clone(), IdentContext::Parameter));

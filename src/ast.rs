@@ -567,10 +567,11 @@ impl Parser {
                         if let Some(TokenKind::LParen) = self.peek() {
                             self.advance(); // (
                             let args = self.parse_expr_list(TokenKind::RParen);
-                            expr =
-                                Expr::MethodCall(Box::new(expr.clone()), name, args, expr.span());
+                            let span = expr.span();
+                            expr = Expr::MethodCall(Box::new(expr), name, args, span);
                         } else {
-                            expr = Expr::FieldAccess(Box::new(expr.clone()), name, expr.span());
+                            let span = expr.span();
+                            expr = Expr::FieldAccess(Box::new(expr), name, span);
                         }
                     } else {
                         break;
@@ -579,7 +580,8 @@ impl Parser {
                 Some(TokenKind::LParen) => {
                     self.advance();
                     let args = self.parse_expr_list(TokenKind::RParen);
-                    expr = Expr::Call(Box::new(expr.clone()), args, expr.span());
+                    let span = expr.span();
+                    expr = Expr::Call(Box::new(expr), args, span);
                 }
                 Some(TokenKind::KwRef) if { true } => {
                     break;
@@ -1537,6 +1539,9 @@ impl Parser {
                 self.advance();
                 break;
             }
+            if self.peek().is_none() {
+                break;
+            }
 
             if let Some(TokenKind::Ident(name)) = self.peek().cloned() {
                 let t = self.advance().unwrap();
@@ -1553,6 +1558,9 @@ impl Parser {
                         expr: Box::new(e),
                     });
                 }
+            } else {
+                self.advance();
+                continue;
             }
 
             self.skip_comments();
@@ -1913,6 +1921,9 @@ impl Parser {
                 self.advance();
                 break;
             }
+            if self.peek().is_none() {
+                break;
+            }
             if let Some(TokenKind::Ident(name)) = self.peek().cloned() {
                 let name_tok = self.advance().unwrap();
                 let name_span = Span::from(&name_tok);
@@ -1943,6 +1954,9 @@ impl Parser {
                         span,
                     });
                 }
+            } else {
+                self.advance();
+                continue;
             }
             self.skip_comments();
             if let Some(TokenKind::Comma) = self.peek() {
@@ -1958,6 +1972,9 @@ impl Parser {
             self.skip_comments();
             if let Some(TokenKind::RBrace) = self.peek() {
                 self.advance();
+                break;
+            }
+            if self.peek().is_none() {
                 break;
             }
 
@@ -2001,6 +2018,9 @@ impl Parser {
                         span,
                     });
                 }
+            } else {
+                self.advance();
+                continue;
             }
 
             self.skip_comments();
