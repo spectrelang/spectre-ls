@@ -4,6 +4,7 @@ mod lexer;
 mod stdlib;
 
 use analysis::*;
+use ast::TypeDefKind;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -238,7 +239,6 @@ fn handle_notification(
                 docs.insert(uri.clone(), text.clone());
             }
 
-            // send to analysis worker (non-blocking send)
             let _ = sender.send((uri.clone(), text));
         }
         "textDocument/didClose" => {
@@ -854,7 +854,7 @@ fn extract_fn_name_before(chars: &[char], paren_pos: usize) -> Option<(String, S
 fn handle_completion(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    _analyses: &Analyses,
+    analyses: &Analyses,
 ) -> Option<lsp_server::Response> {
     let params: lsp_types::CompletionParams = serde_json::from_value(req.params.clone()).ok()?;
     let uri = params.text_document_position.text_document.uri.to_string();
@@ -868,7 +868,9 @@ fn handle_completion(
 
     eprintln!("[spectre-ls] completion at uri={} offset={}", uri, offset);
 
-    let (context_completions, stdlib_completions) = get_completions_for_position(&source, offset);
+    let analysis = get_analysis(&uri, documents, analyses);
+    let (context_completions, stdlib_completions) =
+        get_completions_for_position(&source, offset, analysis.as_deref());
 
     let mut items: Vec<lsp_types::CompletionItem> = Vec::new();
 
@@ -902,6 +904,7 @@ fn handle_completion(
 fn get_completions_for_position(
     source: &str,
     offset: usize,
+    analysis: Option<&DocumentAnalysis>,
 ) -> (Vec<CompletionItem>, Vec<stdlib::CompletionItem>) {
     let chars: Vec<char> = source.chars().collect();
 
@@ -916,20 +919,23 @@ fn get_completions_for_position(
     let paren_pos = find_trigger_position(&chars, offset, '(');
 
     if let Some(dot_idx) = dot_pos {
-        let prefix = extract_completion_prefix(&chars, dot_idx);
+        let prefix = extract_prefix_before_dot(&chars, dot_idx);
         eprintln!("[spectre-ls] dot completion with prefix: {:?}", prefix);
 
         if !prefix.is_empty() {
+            if let Some(analysis) = analysis {
+                let dot_items = get_dot_completions(analysis, &prefix, offset);
+                if !dot_items.is_empty() {
+                    trigger_completions = dot_items;
+                    if let Some(std_completions) = stdlib::get_stdlib_completions(&prefix) {
+                        stdlib_completions = std_completions;
+                    }
+                    return (trigger_completions, stdlib_completions);
+                }
+            }
             if let Some(std_completions) = stdlib::get_stdlib_completions(&prefix) {
                 stdlib_completions = std_completions;
             }
-        }
-
-        let word_at_cursor = extract_word_at_position(&chars, offset);
-        if !word_at_cursor.is_empty() && (prefix.is_empty() || prefix.ends_with(&word_at_cursor)) {
-            let analysis_completions =
-                get_analysis_completions_for_prefix(source, &word_at_cursor, offset);
-            trigger_completions = analysis_completions;
         }
     } else if let Some(paren_idx) = paren_pos {
         let call_context = extract_call_context(&chars, paren_idx);
@@ -958,7 +964,6 @@ fn get_use_completions(chars: &[char], offset: usize) -> Option<Vec<stdlib::Comp
     let mut found_use_open = false;
     let mut found_use_paren = false;
     let mut found_quote = false;
-    let mut use_start = 0;
 
     for i in (0..end).rev() {
         match chars[i] {
@@ -975,7 +980,6 @@ fn get_use_completions(chars: &[char], offset: usize) -> Option<Vec<stdlib::Comp
                 if paren_depth == 0 && !found_use_paren {
                     if i > 0 && chars.get(i - 1).map(|c| *c == 'e').unwrap_or(false) {
                         found_use_paren = true;
-                        use_start = i.saturating_sub(4);
                         if i >= 4 {
                             let maybe_use = &chars[i - 4..i];
                             if maybe_use == ['u', 's', 'e', '('] {
@@ -1075,52 +1079,6 @@ fn find_trigger_position(chars: &[char], offset: usize, trigger: char) -> Option
     None
 }
 
-fn extract_completion_prefix(chars: &[char], dot_pos: usize) -> String {
-    let mut start = dot_pos;
-    while start > 0 && chars[start - 1].is_whitespace() {
-        start -= 1;
-    }
-
-    let mut end = start;
-    while end < chars.len()
-        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
-    {
-        end += 1;
-    }
-
-    chars[start..end].iter().collect()
-}
-
-fn extract_word_at_position(chars: &[char], offset: usize) -> String {
-    if offset == 0 || offset > chars.len() {
-        return String::new();
-    }
-
-    let pos = if offset == chars.len() {
-        offset - 1
-    } else {
-        offset
-    };
-
-    let mut start = pos;
-    while start > 0
-        && (chars[start - 1].is_alphanumeric()
-            || chars[start - 1] == '_'
-            || chars[start - 1] == '.')
-    {
-        start -= 1;
-    }
-
-    let mut end = pos;
-    while end < chars.len()
-        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
-    {
-        end += 1;
-    }
-
-    chars[start..end].iter().collect()
-}
-
 fn extract_call_context(chars: &[char], paren_pos: usize) -> Option<(String, String)> {
     let mut depth = 0i32;
     let mut i = paren_pos;
@@ -1164,33 +1122,103 @@ fn extract_call_context(chars: &[char], paren_pos: usize) -> Option<(String, Str
     None
 }
 
-fn get_analysis_completions_for_prefix(
-    source: &str,
+/// Extract just the identifier token immediately before a dot.
+/// e.g. for `Arena.` at dot_idx=5 → "Arena"
+///      for `foo.bar.` at dot_idx=8 → "bar"
+fn extract_prefix_before_dot(chars: &[char], dot_idx: usize) -> String {
+    if dot_idx == 0 {
+        return String::new();
+    }
+    let mut end = dot_idx;
+    while end > 0 && chars[end - 1] == ' ' {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    chars[start..end].iter().collect()
+}
+
+/// Return completions for `prefix.` by resolving prefix as a type name or variable name.
+fn get_dot_completions(
+    analysis: &DocumentAnalysis,
     prefix: &str,
-    _offset: usize,
+    offset: usize,
 ) -> Vec<CompletionItem> {
-    let analysis = crate::analysis::analyze(source);
-    let mut items = Vec::new();
-
-    for sym in &analysis.symbols {
-        if sym.name.starts_with(prefix) || prefix.is_empty() {
-            let kind = match sym.kind {
-                crate::analysis::SymbolKind::Function => lsp_types::CompletionItemKind::FUNCTION,
-                crate::analysis::SymbolKind::Type => lsp_types::CompletionItemKind::CLASS,
-                crate::analysis::SymbolKind::Variable => lsp_types::CompletionItemKind::VARIABLE,
-                crate::analysis::SymbolKind::Module => lsp_types::CompletionItemKind::MODULE,
-                crate::analysis::SymbolKind::Constant => lsp_types::CompletionItemKind::CONSTANT,
-                crate::analysis::SymbolKind::EnumVariant => {
-                    lsp_types::CompletionItemKind::ENUM_MEMBER
+    let type_name: Option<String> = if analysis.type_defs.contains_key(prefix) {
+        Some(prefix.to_string())
+    } else {
+        analysis.var_scopes.iter()
+            .filter(|s| offset >= s.start && offset <= s.end)
+            .find_map(|s| s.variables.get(prefix))
+            .map(|(type_str, _)| {
+                let t = type_str.trim_start_matches("mut ").trim_start_matches("ref ");
+                if let Some(inner) = t.strip_suffix(']').and_then(|s| s.find('[').map(|i| &s[i+1..])) {
+                    inner.to_string()
+                } else {
+                    t.to_string()
                 }
-                crate::analysis::SymbolKind::Field => lsp_types::CompletionItemKind::FIELD,
-                _ => lsp_types::CompletionItemKind::TEXT,
-            };
+            })
+    };
 
+    let Some(type_name) = type_name else {
+        return Vec::new();
+    };
+
+    let mut items: Vec<CompletionItem> = Vec::new();
+
+    if let Some(td) = analysis.type_defs.get(&type_name) {
+        if let TypeDefKind::Struct(fields) = &td.kind {
+            for field in fields {
+                items.push(CompletionItem {
+                    label: field.name.clone(),
+                    detail: format!("{}: {}", field.name, field.ty.display()),
+                    kind: lsp_types::CompletionItemKind::FIELD,
+                });
+            }
+        }
+        if let TypeDefKind::Enum(variants) = &td.kind {
+            for v in variants {
+                items.push(CompletionItem {
+                    label: v.name.clone(),
+                    detail: format!("{}.{}", type_name, v.name),
+                    kind: lsp_types::CompletionItemKind::ENUM_MEMBER,
+                });
+            }
+        }
+        if let TypeDefKind::UnionConstruct(variants) = &td.kind {
+            for v in variants {
+                items.push(CompletionItem {
+                    label: v.name.clone(),
+                    detail: format!("{}({})", v.name, v.ty.display()),
+                    kind: lsp_types::CompletionItemKind::ENUM_MEMBER,
+                });
+            }
+        }
+    }
+
+    for f in analysis.fn_by_name.values() {
+        if f.self_type.as_deref() == Some(&type_name) {
+            let ret = if f.returns_untrusted {
+                format!("{}!", f.return_type.display())
+            } else {
+                f.return_type.display()
+            };
+            let sig = format!(
+                "fn ({}).{}({}) -> {}",
+                type_name,
+                f.name,
+                f.params.iter()
+                    .map(|p| format!("{}: {}", p.name, p.ty.display()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                ret
+            );
             items.push(CompletionItem {
-                label: sym.name.clone(),
-                detail: sym.type_str.clone().unwrap_or_default(),
-                kind,
+                label: f.name.clone(),
+                detail: sig,
+                kind: lsp_types::CompletionItemKind::METHOD,
             });
         }
     }
