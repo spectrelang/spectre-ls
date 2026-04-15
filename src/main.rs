@@ -6,7 +6,8 @@ mod stdlib;
 use analysis::*;
 use ast::TypeDefKind;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 
 type Analyses = Arc<(Mutex<HashMap<String, Arc<DocumentAnalysis>>>, Condvar)>;
@@ -444,6 +445,20 @@ fn handle_hover(
     let result = if let Some(h) = hover {
         eprintln!("[spectre-ls] [HOVER] returning user-defined hover");
         Some(create_hover_response(h))
+    } else if let Some(builtin_hover) = get_builtin_hover_at_position(&source, offset) {
+        eprintln!(
+            "[spectre-ls] [HOVER] returning builtin hover: {:?}",
+            (&builtin_hover.signature, &builtin_hover.documentation)
+        );
+        Some(create_hover_response(builtin_hover))
+    } else if let Some(imported_hover) =
+        get_imported_hover_at_position(&uri, &source, offset, documents, analyses)
+    {
+        eprintln!(
+            "[spectre-ls] [HOVER] returning imported hover: {:?}",
+            (&imported_hover.signature, &imported_hover.documentation)
+        );
+        Some(create_hover_response(imported_hover))
     } else if let Some(stdlib_hover) = get_stdlib_hover_at_position(&source, offset) {
         eprintln!(
             "[spectre-ls] [HOVER] returning stdlib hover: {:?}",
@@ -513,6 +528,92 @@ fn get_stdlib_hover_at_position(source: &str, offset: usize) -> Option<HoverResu
     stdlib::get_stdlib_hover(&module_prefix, &name)
 }
 
+fn get_builtin_hover_at_position(source: &str, offset: usize) -> Option<HoverResult> {
+    let chars: Vec<char> = source.chars().collect();
+    if offset > chars.len() {
+        return None;
+    }
+
+    let word = extract_word_at(&chars, offset);
+    if !word.starts_with('@') || word.len() < 2 {
+        return None;
+    }
+
+    let name = &word[1..];
+    get_builtin_hover(name)
+}
+
+fn get_builtin_hover(name: &str) -> Option<HoverResult> {
+    match name {
+        "get" => Some(HoverResult {
+            signature: "fn @get[T](list: list[T], index: int) -> option[T]".to_string(),
+            documentation:
+                "Gets an element from a list by index. Returns none if index is out of bounds."
+                    .to_string(),
+        }),
+        "append" => Some(HoverResult {
+            signature: "fn @append[T](list: &list[T], value: T)".to_string(),
+            documentation: "Appends a value to the end of a list.".to_string(),
+        }),
+        "reserve" => Some(HoverResult {
+            signature: "fn @reserve[T](list: &list[T], capacity: int)".to_string(),
+            documentation: "Reserves capacity in a list for future elements without adding any."
+                .to_string(),
+        }),
+        "puts" => Some(HoverResult {
+            signature: "fn @puts(string: string)".to_string(),
+            documentation: "Prints a string to stdout with a newline.".to_string(),
+        }),
+        "len" => Some(HoverResult {
+            signature: "fn @len[T](list: list[T]) -> int".to_string(),
+            documentation: "Returns the length of a list.".to_string(),
+        }),
+        "alloc" => Some(HoverResult {
+            signature: "fn @alloc(size: usize) -> ref void".to_string(),
+            documentation: "Allocates raw memory. Returns a pointer to uninitialized memory."
+                .to_string(),
+        }),
+        "free" => Some(HoverResult {
+            signature: "fn @free(ptr: ref void)".to_string(),
+            documentation: "Frees previously allocated raw memory.".to_string(),
+        }),
+        "snprintf" => Some(HoverResult {
+            signature: "fn @snprintf(buf: &ref void, size: usize, fmt: string, args: ...) -> int"
+                .to_string(),
+            documentation: "Formats a string into a buffer.".to_string(),
+        }),
+        "dprintf" => Some(HoverResult {
+            signature: "fn @dprintf(fd: int, fmt: string, args: ...) -> int".to_string(),
+            documentation: "Formats and prints to a file descriptor.".to_string(),
+        }),
+        "load8" => Some(HoverResult {
+            signature: "fn @load8(addr: ref void) -> u8".to_string(),
+            documentation: "Loads a byte from memory.".to_string(),
+        }),
+        "ptradd" => Some(HoverResult {
+            signature: "fn @ptradd[T](ptr: ref T, offset: usize) -> ref T".to_string(),
+            documentation: "Adds an offset to a pointer.".to_string(),
+        }),
+        "load" => Some(HoverResult {
+            signature: "fn @load[T](addr: ref T) -> T".to_string(),
+            documentation: "Loads a value from memory.".to_string(),
+        }),
+        "memcpy" => Some(HoverResult {
+            signature: "fn @memcpy(dest: ref void, src: ref void, size: usize)".to_string(),
+            documentation: "Copies memory from source to destination.".to_string(),
+        }),
+        "store" => Some(HoverResult {
+            signature: "fn @store[T](addr: ref T, value: T)".to_string(),
+            documentation: "Stores a value to memory.".to_string(),
+        }),
+        "store8" => Some(HoverResult {
+            signature: "fn @store8(addr: ref void, value: u8)".to_string(),
+            documentation: "Stores a byte to memory.".to_string(),
+        }),
+        _ => None,
+    }
+}
+
 fn find_last_dot_before_offset(chars: &[char], offset: usize) -> Option<usize> {
     let check_until = offset.min(chars.len());
     for i in (0..check_until).rev() {
@@ -531,6 +632,152 @@ fn find_last_dot_before_offset(chars: &[char], offset: usize) -> Option<usize> {
     None
 }
 
+fn get_imported_hover_at_position(
+    uri: &str,
+    source: &str,
+    offset: usize,
+    documents: &Arc<Mutex<HashMap<String, String>>>,
+    analyses: &Analyses,
+) -> Option<HoverResult> {
+    let chars: Vec<char> = source.chars().collect();
+    if offset > chars.len() {
+        return None;
+    }
+
+    let word = extract_word_at(&chars, offset);
+    if word.is_empty() || !word.contains('.') {
+        return None;
+    }
+
+    let dot_pos = word.find('.')?;
+    let module_prefix = &word[..dot_pos];
+    let name = &word[dot_pos + 1..];
+
+    if module_prefix.is_empty() || name.is_empty() {
+        return None;
+    }
+
+    let analysis = get_analysis(uri, documents, analyses)?;
+
+    let mod_path = analysis.imports.get(module_prefix)?;
+    let resolved_path = resolve_import_path(uri, mod_path)?;
+
+    let ext_analysis = get_or_load_external_analysis(&resolved_path, documents, analyses)?;
+
+    if let Some(sym) = ext_analysis.symbol_at.get(&offset) {
+        return Some(HoverResult {
+            signature: sym.type_str.clone().unwrap_or(sym.name.clone()),
+            documentation: sym.doc.clone(),
+        });
+    }
+
+    if let Some(f) = ext_analysis.fn_by_name.get(name) {
+        let ret_display = if f.returns_untrusted {
+            format!("{}!", f.return_type.display())
+        } else {
+            f.return_type.display()
+        };
+        let sig = format!(
+            "fn {}({}) -> {}",
+            f.name,
+            f.params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty.display()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            ret_display
+        );
+        return Some(HoverResult {
+            signature: sig,
+            documentation: f.doc_comments.join("\n"),
+        });
+    }
+
+    if let Some(td) = ext_analysis.type_defs.get(name) {
+        let kind_str = match &td.kind {
+            TypeDefKind::Struct(_) => "struct",
+            TypeDefKind::Union(_) => "union",
+            TypeDefKind::UnionConstruct(_) => "union (constructors)",
+            TypeDefKind::Enum(_) => "enum",
+        };
+        let sig = format!("{} {}", kind_str, td.name);
+        let doc = td.doc_comments.join("\n");
+        return Some(HoverResult {
+            signature: sig,
+            documentation: doc,
+        });
+    }
+
+    None
+}
+
+fn resolve_import_path(uri: &str, mod_path: &str) -> Option<PathBuf> {
+    let base_dir = if uri.starts_with("file://") {
+        let path_part = uri.strip_prefix("file://").unwrap_or(uri);
+        let path_part = if cfg!(windows) && path_part.len() > 2 && path_part[1..].starts_with(":") {
+            path_part
+        } else {
+            path_part.trim_start_matches('/')
+        };
+        PathBuf::from(path_part).parent()?.to_path_buf()
+    } else {
+        PathBuf::from(".")
+    };
+
+    let stdlib = stdlib::get_stdlib()?;
+    let std_dir = &stdlib.std_dir;
+
+    if mod_path.starts_with("std/") || mod_path.starts_with("std\\") {
+        let module_name = mod_path
+            .trim_start_matches("std/")
+            .trim_start_matches("std\\")
+            .trim_end_matches(".sx")
+            .trim_end_matches(".sx");
+        let file_path = std_dir.join(format!("{}.sx", module_name));
+        if file_path.exists() {
+            return Some(file_path);
+        }
+        let file_path = std_dir.join("std.sx");
+        if file_path.exists() {
+            return Some(file_path);
+        }
+        return None;
+    }
+
+    if mod_path.starts_with("std") && !mod_path.contains('/') && !mod_path.contains('\\') {
+        let file_path = std_dir.join(format!("{}.sx", mod_path));
+        if file_path.exists() {
+            return Some(file_path);
+        }
+        let file_path = std_dir.join("std.sx");
+        if file_path.exists() {
+            return Some(file_path);
+        }
+        return None;
+    }
+
+    let resolved = base_dir.join(mod_path);
+    let with_ext = resolved.with_extension("sx");
+    if with_ext.exists() {
+        return Some(with_ext);
+    }
+    if resolved.exists() {
+        return Some(resolved);
+    }
+    None
+}
+
+fn get_or_load_external_analysis(
+    path: &PathBuf,
+    documents: &Arc<Mutex<HashMap<String, String>>>,
+    analyses: &Analyses,
+) -> Option<Arc<DocumentAnalysis>> {
+    let path_str = path.to_string_lossy().to_string();
+    let uri = format!("file://{}", path_str.replace('\\', "/"));
+
+    get_analysis(&uri, documents, analyses)
+}
+
 fn extract_word_at(chars: &[char], offset: usize) -> String {
     if offset == 0 || offset > chars.len() {
         return String::new();
@@ -546,14 +793,18 @@ fn extract_word_at(chars: &[char], offset: usize) -> String {
     while start > 0
         && (chars[start - 1].is_alphanumeric()
             || chars[start - 1] == '_'
-            || chars[start - 1] == '.')
+            || chars[start - 1] == '.'
+            || chars[start - 1] == '@')
     {
         start -= 1;
     }
 
     let mut end = pos;
     while end < chars.len()
-        && (chars[end].is_alphanumeric() || chars[end] == '_' || chars[end] == '.')
+        && (chars[end].is_alphanumeric()
+            || chars[end] == '_'
+            || chars[end] == '.'
+            || chars[end] == '@')
     {
         end += 1;
     }
@@ -1149,12 +1400,19 @@ fn get_dot_completions(
     let type_name: Option<String> = if analysis.type_defs.contains_key(prefix) {
         Some(prefix.to_string())
     } else {
-        analysis.var_scopes.iter()
+        analysis
+            .var_scopes
+            .iter()
             .filter(|s| offset >= s.start && offset <= s.end)
             .find_map(|s| s.variables.get(prefix))
             .map(|(type_str, _)| {
-                let t = type_str.trim_start_matches("mut ").trim_start_matches("ref ");
-                if let Some(inner) = t.strip_suffix(']').and_then(|s| s.find('[').map(|i| &s[i+1..])) {
+                let t = type_str
+                    .trim_start_matches("mut ")
+                    .trim_start_matches("ref ");
+                if let Some(inner) = t
+                    .strip_suffix(']')
+                    .and_then(|s| s.find('[').map(|i| &s[i + 1..]))
+                {
                     inner.to_string()
                 } else {
                     t.to_string()
@@ -1209,7 +1467,8 @@ fn get_dot_completions(
                 "fn ({}).{}({}) -> {}",
                 type_name,
                 f.name,
-                f.params.iter()
+                f.params
+                    .iter()
                     .map(|p| format!("{}: {}", p.name, p.ty.display()))
                     .collect::<Vec<_>>()
                     .join(", "),

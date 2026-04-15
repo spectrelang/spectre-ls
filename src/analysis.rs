@@ -1,7 +1,7 @@
+use crate::ast::Module;
 use crate::ast::*;
 use crate::lexer::Lexer;
 use std::collections::HashMap;
-use crate::ast::Module;
 
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
@@ -35,13 +35,14 @@ pub struct DocumentAnalysis {
     pub var_scopes: Vec<Scope>,
     pub symbol_at: HashMap<usize, SymbolInfo>,
     pub resolves_to: HashMap<Span, Span>,
+    pub imports: HashMap<String, String>, 
 }
 
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub start: usize,
     pub end: usize,
-    pub variables: HashMap<String, (String, Span)>, // name -> (type, def_span)
+    pub variables: HashMap<String, (String, Span)>, 
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +50,7 @@ pub enum IdentContext {
     FunctionCall(String),
     FunctionDef,
     TypeRef,
-    VariableDef(String, String), // name, type_str
+    VariableDef(String, String), 
     VariableRef,
     Parameter,
     FieldAccess,
@@ -63,17 +64,28 @@ pub enum IdentContext {
 
 pub fn analyze(source: &str) -> DocumentAnalysis {
     let start = std::time::Instant::now();
-    eprintln!("[spectre-ls] [ANALYZE] starting analysis of {} bytes", source.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] starting analysis of {} bytes",
+        source.len()
+    );
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
-    eprintln!("[spectre-ls] [ANALYZE] lexing done in {:?}, {} tokens", start.elapsed(), tokens.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] lexing done in {:?}, {} tokens",
+        start.elapsed(),
+        tokens.len()
+    );
 
     let parse_start = std::time::Instant::now();
     let mut parser = Parser::new(tokens, source.to_string());
     let module = parser.parse_module();
-    eprintln!("[spectre-ls] [ANALYZE] parsing done in {:?} (parse-only: {:?}), {} items",
-        start.elapsed(), parse_start.elapsed(), module.items.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] parsing done in {:?} (parse-only: {:?}), {} items",
+        start.elapsed(),
+        parse_start.elapsed(),
+        module.items.len()
+    );
 
     let mut symbols: Vec<SymbolInfo> = Vec::new();
     let mut fn_by_name: HashMap<String, Function> = HashMap::new();
@@ -81,12 +93,10 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     let mut ident_spans: Vec<(Span, IdentContext)> = Vec::new();
     let mut symbol_at: HashMap<usize, SymbolInfo> = HashMap::new();
     let mut resolves_to: HashMap<Span, Span> = HashMap::new();
+    let mut imports: HashMap<String, String> = HashMap::new();
 
     eprintln!("[spectre-ls] [ANALYZE] starting symbol extraction...");
-    let extract_start = std::time::Instant::now();
-    let mut item_count = 0;
     for item in &module.items {
-        item_count += 1;
         match item {
             Item::Function(f) => {
                 let mut doc = f.doc_comments.join("\n");
@@ -167,7 +177,10 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                 fn_by_name.insert(f.name.clone(), f.clone());
                 let clone_elapsed = clone_t.elapsed();
                 if clone_elapsed.as_millis() > 10 {
-                    eprintln!("[spectre-ls] [ANALYZE] slow fn clone: {} took {:?}", f.name, clone_elapsed);
+                    eprintln!(
+                        "[spectre-ls] [ANALYZE] slow fn clone: {} took {:?}",
+                        f.name, clone_elapsed
+                    );
                 }
 
                 for param in &f.params {
@@ -262,6 +275,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                 for offset in span.range() {
                     symbol_at.insert(offset, sym.clone());
                 }
+                imports.insert(local_name.clone(), mod_path.clone());
             }
             Item::Test(tb) => {
                 let sym = SymbolInfo {
@@ -304,20 +318,38 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
         }
     }
 
-    eprintln!("[spectre-ls] [ANALYZE] symbol extraction done in {:?}", start.elapsed());
-    eprintln!("[spectre-ls] [ANALYZE] {} symbols, {} functions, {} types, {} ident_spans",
-        symbols.len(), fn_by_name.len(), type_defs.len(), ident_spans.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] symbol extraction done in {:?}",
+        start.elapsed()
+    );
+    eprintln!(
+        "[spectre-ls] [ANALYZE] {} symbols, {} functions, {} types, {} ident_spans",
+        symbols.len(),
+        fn_by_name.len(),
+        type_defs.len(),
+        ident_spans.len()
+    );
 
     eprintln!("[spectre-ls] [ANALYZE] starting scope building...");
     let var_scopes = build_scopes(&module);
-    eprintln!("[spectre-ls] [ANALYZE] scope building done in {:?}, {} scopes",
-        start.elapsed(), var_scopes.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] scope building done in {:?}, {} scopes",
+        start.elapsed(),
+        var_scopes.len()
+    );
 
-    eprintln!("[spectre-ls] [ANALYZE] starting variable resolution for {} ident spans...", ident_spans.len());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] starting variable resolution for {} ident spans...",
+        ident_spans.len()
+    );
     let src: Vec<char> = source.chars().collect();
     for (i, (span, ctx)) in ident_spans.iter().enumerate() {
         if i % 1000 == 0 {
-            eprintln!("[spectre-ls] [ANALYZE] resolving variable {}/{}", i, ident_spans.len());
+            eprintln!(
+                "[spectre-ls] [ANALYZE] resolving variable {}/{}",
+                i,
+                ident_spans.len()
+            );
         }
         if let IdentContext::VariableRef = ctx {
             if span.start < src.len() {
@@ -334,7 +366,10 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
         }
     }
 
-    eprintln!("[spectre-ls] [ANALYZE] analysis complete in {:?}", start.elapsed());
+    eprintln!(
+        "[spectre-ls] [ANALYZE] analysis complete in {:?}",
+        start.elapsed()
+    );
 
     DocumentAnalysis {
         module,
@@ -345,6 +380,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
         var_scopes,
         symbol_at,
         resolves_to,
+        imports,
     }
 }
 
@@ -354,7 +390,11 @@ fn size_of_type(ty: &Type, type_defs: &HashMap<String, TypeDef>) -> Option<usize
     size_of_type_impl(ty, type_defs, &mut visited)
 }
 
-fn size_of_type_impl(ty: &Type, type_defs: &HashMap<String, TypeDef>, visited: &mut std::collections::HashSet<String>) -> Option<usize> {
+fn size_of_type_impl(
+    ty: &Type,
+    type_defs: &HashMap<String, TypeDef>,
+    visited: &mut std::collections::HashSet<String>,
+) -> Option<usize> {
     match ty {
         Type::Named(n, _) => match n.as_str() {
             "i32" => Some(4),
@@ -366,7 +406,7 @@ fn size_of_type_impl(ty: &Type, type_defs: &HashMap<String, TypeDef>, visited: &
             "bool" => Some(1),
             _ => {
                 if visited.contains(n) {
-                    return None; 
+                    return None;
                 }
 
                 if let Some(td) = type_defs.get(n) {
@@ -400,7 +440,11 @@ fn size_of_typedef(td: &TypeDef, type_defs: &HashMap<String, TypeDef>) -> Option
     size_of_typedef_impl(td, type_defs, &mut visited)
 }
 
-fn size_of_typedef_impl(td: &TypeDef, type_defs: &HashMap<String, TypeDef>, visited: &mut std::collections::HashSet<String>) -> Option<usize> {
+fn size_of_typedef_impl(
+    td: &TypeDef,
+    type_defs: &HashMap<String, TypeDef>,
+    visited: &mut std::collections::HashSet<String>,
+) -> Option<usize> {
     match &td.kind {
         TypeDefKind::Struct(fields) => {
             let mut total: usize = 0;
@@ -879,7 +923,11 @@ fn collect_vars_from_expr(expr: &Expr, vars: &mut HashMap<String, (String, Span)
     }
 }
 
-pub fn hover_closest(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Option<HoverResult> {
+pub fn hover_closest(
+    analysis: &DocumentAnalysis,
+    offset: usize,
+    source: &str,
+) -> Option<HoverResult> {
     let closest = analysis.symbols.iter().min_by_key(|sym| {
         if offset >= sym.span.start && offset < sym.span.end {
             0usize
@@ -911,62 +959,97 @@ pub fn hover_closest(analysis: &DocumentAnalysis, offset: usize, source: &str) -
                 let mut doc = f.doc_comments.join("\n");
                 if let Some(pre) = &f.pre {
                     if !pre.conditions.is_empty() {
-                        if !doc.is_empty() { doc.push_str("\n\n"); }
+                        if !doc.is_empty() {
+                            doc.push_str("\n\n");
+                        }
                         doc.push_str("Preconditions:\n");
                         for cond in &pre.conditions {
-                            doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_source(source, &cond.expr)));
+                            doc.push_str(&format!(
+                                "- `{}`: `{}`\n",
+                                cond.name,
+                                expr_source(source, &cond.expr)
+                            ));
                         }
                     }
                 }
                 if let Some(post) = &f.post {
                     if !post.conditions.is_empty() {
-                        if !doc.is_empty() { doc.push_str("\n\n"); }
+                        if !doc.is_empty() {
+                            doc.push_str("\n\n");
+                        }
                         doc.push_str("Postconditions:\n");
                         for cond in &post.conditions {
-                            doc.push_str(&format!("- `{}`: `{}`\n", cond.name, expr_source(source, &cond.expr)));
+                            doc.push_str(&format!(
+                                "- `{}`: `{}`\n",
+                                cond.name,
+                                expr_source(source, &cond.expr)
+                            ));
                         }
                     }
                 }
-                return Some(HoverResult { signature: sig, documentation: doc });
+                return Some(HoverResult {
+                    signature: sig,
+                    documentation: doc,
+                });
             }
         }
         SymbolKind::Type => {
             if let Some(td) = analysis.type_defs.get(&closest.name) {
                 let sig = match &td.kind {
                     TypeDefKind::Struct(fields) => {
-                        let fields_str = fields.iter()
+                        let fields_str = fields
+                            .iter()
                             .map(|f| {
                                 let m = if f.is_mut { "mut " } else { "" };
                                 format!("    {}{}: {}", m, f.name, f.ty.display())
                             })
-                            .collect::<Vec<_>>().join("\n");
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         format!("type {} {{\n{}\n}}", td.name, fields_str)
                     }
                     TypeDefKind::Union(types) => format!(
                         "union {} = {}",
                         td.name,
-                        types.iter().map(|t| t.display()).collect::<Vec<_>>().join(" | ")
+                        types
+                            .iter()
+                            .map(|t| t.display())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
                     ),
                     TypeDefKind::UnionConstruct(variants) => format!(
                         "union {} = {{\n{}\n}}",
                         td.name,
-                        variants.iter().map(|v| format!("    {}({})", v.name, v.ty.display())).collect::<Vec<_>>().join("\n")
+                        variants
+                            .iter()
+                            .map(|v| format!("    {}({})", v.name, v.ty.display()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ),
                     TypeDefKind::Enum(variants) => format!(
                         "enum {} = {{\n{}\n}}",
                         td.name,
-                        variants.iter().map(|v| format!("    {}", v.name)).collect::<Vec<_>>().join(",\n")
+                        variants
+                            .iter()
+                            .map(|v| format!("    {}", v.name))
+                            .collect::<Vec<_>>()
+                            .join(",\n")
                     ),
                 };
                 let doc = td.doc_comments.join("\n");
-                return Some(HoverResult { signature: sig, documentation: doc });
+                return Some(HoverResult {
+                    signature: sig,
+                    documentation: doc,
+                });
             }
         }
         _ => {}
     }
 
     Some(HoverResult {
-        signature: closest.type_str.clone().unwrap_or_else(|| closest.name.clone()),
+        signature: closest
+            .type_str
+            .clone()
+            .unwrap_or_else(|| closest.name.clone()),
         documentation: closest.doc.clone(),
     })
 }
@@ -1155,7 +1238,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                             };
                             let mut doc = td.doc_comments.join("\n");
                             let mut attrs: Vec<String> = Vec::new();
-                            
+
                             if td.is_pub {
                                 attrs.push("pub".to_string());
                             }
