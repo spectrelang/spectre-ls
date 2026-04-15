@@ -65,20 +65,6 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
     let start = std::time::Instant::now();
     eprintln!("[spectre-ls] [ANALYZE] starting analysis of {} bytes", source.len());
 
-    if source.len() > 200_000 {
-        eprintln!("[spectre-ls] [ANALYZE] file too large, returning empty analysis");
-        return DocumentAnalysis {
-            module: Module { items: vec![], source: "".to_string() },
-            symbols: vec![],
-            ident_spans: vec![],
-            fn_by_name: HashMap::new(),
-            type_defs: HashMap::new(),
-            var_scopes: vec![],
-            symbol_at: HashMap::new(),
-            resolves_to: HashMap::new(),
-        };
-    }
-
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize();
     eprintln!("[spectre-ls] [ANALYZE] lexing done in {:?}, {} tokens", start.elapsed(), tokens.len());

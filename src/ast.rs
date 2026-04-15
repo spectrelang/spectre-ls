@@ -1743,8 +1743,11 @@ impl Parser {
 
         self.skip_comments();
         let kind = if let Some(TokenKind::LBrace) = self.peek() {
+            let saved_pos = self.pos;
             let fields = self.parse_struct_fields();
             if fields.is_empty() {
+                // Restore position so parse_enum_variants sees the opening `{`
+                self.pos = saved_pos;
                 let variants = self.parse_enum_variants();
                 if !variants.is_empty() {
                     TypeDefKind::Enum(variants)
@@ -2031,6 +2034,12 @@ impl Parser {
                     name_span: name_span.clone(),
                     span: name_span.clone(),
                 });
+            } else if self.peek().is_none() {
+                // EOF without closing brace
+                break;
+            } else {
+                // Unrecognized token — advance to avoid infinite loop
+                self.advance();
             }
             self.skip_comments();
             if let Some(TokenKind::Comma) = self.peek() {
