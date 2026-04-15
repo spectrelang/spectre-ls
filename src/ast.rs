@@ -983,7 +983,14 @@ impl Parser {
                     break;
                 }
 
-                let pattern = self.parse_pattern()?;
+                let pattern = if let Some(p) = self.parse_pattern() {
+                    p
+                } else {
+                    if self.advance().is_none() {
+                        break;
+                    }
+                    continue;
+                };
                 self.skip_comments();
 
                 if let Some(TokenKind::Arrow) = self.peek() {
@@ -1131,7 +1138,9 @@ impl Parser {
                             self.advance();
                         }
                     } else {
-                        break;
+                        if self.advance().is_none() {
+                            break;
+                        }
                     }
                 }
             }

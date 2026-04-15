@@ -240,14 +240,11 @@ fn get_analysis(
     };
 
     if let Some(text) = maybe_text {
-        const SYNC_ANALYZE_THRESHOLD: usize = 10_000;
-        if text.len() <= SYNC_ANALYZE_THRESHOLD {
-            eprintln!("[spectre-ls] performing quick synchronous analysis for {} ({} bytes)", uri, text.len());
-            let analysis = analyze(&text);
-            let mut a = analyses.lock().unwrap();
-            a.insert(uri.to_string(), analysis.clone());
-            return Some(analysis);
-        }
+        eprintln!("[spectre-ls] performing synchronous analysis for {} ({} bytes)", uri, text.len());
+        let analysis = analyze(&text);
+        let mut a = analyses.lock().unwrap();
+        a.insert(uri.to_string(), analysis.clone());
+        return Some(analysis);
     }
 
     eprintln!("[spectre-ls] no analysis available for {}", uri);
