@@ -5,7 +5,7 @@ mod stdlib;
 
 use analysis::*;
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 fn main() {
@@ -72,12 +72,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[spectre-ls] initialized, params: {:?}", init_params);
 
     let documents: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let analyses: Arc<Mutex<HashMap<String, DocumentAnalysis>>> =
+    let analyses: Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (an_tx, an_rx) = mpsc::channel::<(String, String)>();
     let analyses_worker = Arc::clone(&analyses);
 
-    thread::spawn(move || {
+    let worker_handle = thread::spawn(move || {
         for (uri, text) in an_rx.iter() {
             eprintln!("[spectre-ls] worker analyze start: {}", uri);
             let analysis = analyze(&text);
@@ -89,73 +89,97 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 analysis.type_defs.len()
             );
             let mut a = analyses_worker.lock().unwrap();
-            a.insert(uri, analysis);
+            a.insert(uri, Arc::new(analysis));
         }
         eprintln!("[spectre-ls] analysis worker exiting");
     });
 
     eprintln!("[spectre-ls] entering message loop");
 
-    loop {
-        let msg = match connection
-            .receiver
-            .recv_timeout(std::time::Duration::from_millis(100))
-        {
-            Ok(msg) => msg,
-            Err(_) => continue,
-        };
+    let mut shutting_down = false;
 
-        match msg {
-            lsp_server::Message::Request(req) => {
-                eprintln!("[spectre-ls] request: {}", req.method);
-                if connection.handle_shutdown(&req)? {
-                    eprintln!("[spectre-ls] shutting down");
-                    return Ok(());
+    {
+        let an_tx = an_tx;
+        loop {
+            let msg = match connection.receiver.recv() {
+                Ok(msg) => msg,
+                Err(_) => {
+                    eprintln!("[spectre-ls] connection closed, exiting");
+                    break;
                 }
-                match handle_request(&req, &documents, &analyses) {
-                    Ok(Some(resp)) => {
-                        connection
-                            .sender
-                            .send(lsp_server::Message::Response(resp))?;
+            };
+
+            match msg {
+                lsp_server::Message::Request(req) => {
+                    eprintln!("[spectre-ls] request: {}", req.method);
+                    if connection.handle_shutdown(&req)? {
+                        eprintln!("[spectre-ls] shutdown request received, waiting for exit");
+                        shutting_down = true;
+                        continue;
                     }
-                    Ok(None) => {
-                        eprintln!("[spectre-ls] no response for {}", req.method);
+
+                    if shutting_down {
+                        eprintln!(
+                            "[spectre-ls] ignoring request after shutdown: {}",
+                            req.method
+                        );
+                        continue;
                     }
-                    Err(e) => {
-                        eprintln!("[spectre-ls] error handling {}: {}", req.method, e);
-                        // Send error response
-                        let resp = lsp_server::Response {
-                            id: req.id.clone(),
-                            result: None,
-                            error: Some(lsp_server::ResponseError {
-                                code: lsp_server::ErrorCode::InternalError as i32,
-                                message: e.to_string(),
-                                data: None,
-                            }),
-                        };
-                        connection
-                            .sender
-                            .send(lsp_server::Message::Response(resp))?;
+                    match handle_request(&req, &documents, &analyses) {
+                        Ok(Some(resp)) => {
+                            connection
+                                .sender
+                                .send(lsp_server::Message::Response(resp))?;
+                        }
+                        Ok(None) => {
+                            eprintln!("[spectre-ls] no response for {}", req.method);
+                        }
+                        Err(e) => {
+                            eprintln!("[spectre-ls] error handling {}: {}", req.method, e);
+                            let resp = lsp_server::Response {
+                                id: req.id.clone(),
+                                result: None,
+                                error: Some(lsp_server::ResponseError {
+                                    code: lsp_server::ErrorCode::InternalError as i32,
+                                    message: e.to_string(),
+                                    data: None,
+                                }),
+                            };
+                            connection
+                                .sender
+                                .send(lsp_server::Message::Response(resp))?;
+                        }
                     }
                 }
-            }
-            lsp_server::Message::Notification(notification) => {
-                eprintln!("[spectre-ls] notification: {}", notification.method);
-                if let Err(e) = handle_notification(&notification, &documents, &analyses, &an_tx) {
-                    eprintln!("[spectre-ls] error handling notification: {}", e);
+                lsp_server::Message::Notification(notification) => {
+                    eprintln!("[spectre-ls] notification: {}", notification.method);
+
+                    if notification.method == "exit" {
+                        eprintln!("[spectre-ls] exit notification received, exiting");
+                        break;
+                    }
+
+                    if let Err(e) =
+                        handle_notification(&notification, &documents, &analyses, &an_tx)
+                    {
+                        eprintln!("[spectre-ls] error handling notification: {}", e);
+                    }
                 }
-            }
-            lsp_server::Message::Response(resp) => {
-                eprintln!("[spectre-ls] response: {:?}", resp);
+                lsp_server::Message::Response(resp) => {
+                    eprintln!("[spectre-ls] response: {:?}", resp);
+                }
             }
         }
     }
+    let _ = worker_handle.join();
+    eprintln!("[spectre-ls] worker thread joined");
+    Ok(())
 }
 
 fn handle_request(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Result<Option<lsp_server::Response>, Box<dyn std::error::Error>> {
     match req.method.as_str() {
         "textDocument/hover" => Ok(handle_hover(req, documents, analyses)),
@@ -174,7 +198,7 @@ fn handle_request(
 fn handle_notification(
     notification: &lsp_server::Notification,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
     sender: &mpsc::Sender<(String, String)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match notification.method.as_str() {
@@ -242,15 +266,19 @@ fn handle_notification(
 fn get_analysis(
     uri: &str,
     _documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
-) -> Option<DocumentAnalysis> {
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
+) -> Option<Arc<DocumentAnalysis>> {
+    eprintln!("[spectre-ls] [GET_ANALYSIS] looking for {}", uri);
     {
         let a = analyses.lock().unwrap();
+        eprintln!("[spectre-ls] [GET_ANALYSIS] cache has {} entries", a.len());
         if let Some(analysis) = a.get(uri) {
-            return Some(analysis.clone());
+            eprintln!("[spectre-ls] [GET_ANALYSIS] cache hit for {}", uri);
+            return Some(Arc::clone(analysis));
         }
     }
 
+    eprintln!("[spectre-ls] [GET_ANALYSIS] cache miss, checking documents");
     let maybe_text = {
         let docs = _documents.lock().unwrap();
         docs.get(uri).cloned()
@@ -258,17 +286,24 @@ fn get_analysis(
 
     if let Some(text) = maybe_text {
         eprintln!(
-            "[spectre-ls] performing synchronous analysis for {} ({} bytes)",
+            "[spectre-ls] [GET_ANALYSIS] performing synchronous analysis for {} ({} bytes)",
             uri,
             text.len()
         );
-        let analysis = analyze(&text);
+        let analysis = Arc::new(analyze(&text));
+        eprintln!(
+            "[spectre-ls] [GET_ANALYSIS] analysis complete: {} symbols",
+            analysis.symbols.len()
+        );
         let mut a = analyses.lock().unwrap();
-        a.insert(uri.to_string(), analysis.clone());
+        a.insert(uri.to_string(), Arc::clone(&analysis));
         return Some(analysis);
     }
 
-    eprintln!("[spectre-ls] no analysis available for {}", uri);
+    eprintln!(
+        "[spectre-ls] [GET_ANALYSIS] no analysis available for {}",
+        uri
+    );
     None
 }
 
@@ -296,23 +331,29 @@ fn lsp_position(source: &str, offset: usize) -> lsp_types::Position {
 }
 
 fn offset_from_position(source: &str, position: lsp_types::Position) -> usize {
-    let chars: Vec<char> = source.chars().collect();
-    let mut line = 0u32;
-    let mut col = 0u32;
+    let target_line = position.line as usize;
+    let target_col = position.character as usize;
 
-    for (i, &c) in chars.iter().enumerate() {
-        if line == position.line && col == position.character {
-            return i;
+    let mut offset = 0;
+    let mut current_line = 0;
+
+    for line in source.lines() {
+        if current_line == target_line {
+            let mut col = 0;
+            for ch in line.chars() {
+                if col == target_col {
+                    return offset;
+                }
+                offset += ch.len_utf8();
+                col += 1;
+            }
+            return offset;
         }
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
+        offset += line.len() + 1;
+        current_line += 1;
     }
 
-    chars.len()
+    source.len()
 }
 
 fn lsp_range_from_span(source: &str, span: &ast::Span) -> lsp_types::Range {
@@ -324,8 +365,10 @@ fn lsp_range_from_span(source: &str, span: &ast::Span) -> lsp_types::Range {
 fn handle_hover(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
+    eprintln!("[spectre-ls] [HOVER] ===== START =====");
+
     let params: lsp_types::HoverParams = serde_json::from_value(req.params.clone()).ok()?;
     let uri = params
         .text_document_position_params
@@ -334,28 +377,48 @@ fn handle_hover(
         .to_string();
     let position = params.text_document_position_params.position;
 
+    eprintln!(
+        "[spectre-ls] [HOVER] uri={}, line={}, char={}",
+        uri, position.line, position.character
+    );
+
     let source = {
         let docs = documents.lock().unwrap();
         docs.get(&uri)?.clone()
     };
+
+    eprintln!(
+        "[spectre-ls] [HOVER] document retrieved, size={} bytes",
+        source.len()
+    );
+
     let offset = offset_from_position(&source, position);
 
-    eprintln!("[spectre-ls] hover at uri={} offset={}", uri, offset);
+    eprintln!("[spectre-ls] [HOVER] converted to offset={}", offset);
 
     let analysis = get_analysis(&uri, documents, analyses)?;
+    eprintln!(
+        "[spectre-ls] [HOVER] analysis retrieved: {} symbols, {} fn_by_name, {} type_defs",
+        analysis.symbols.len(),
+        analysis.fn_by_name.len(),
+        analysis.type_defs.len()
+    );
+
+    eprintln!("[spectre-ls] [HOVER] calling hover_at(offset={})", offset);
     let hover = hover_at(&analysis, offset, &source);
 
     eprintln!(
-        "[spectre-ls] hover result: {:?}",
-        hover.as_ref().map(|h| &h.signature)
+        "[spectre-ls] [HOVER] hover_at returned: {:?}",
+        hover.as_ref().map(|h| (&h.signature, &h.documentation))
     );
 
     let result = if let Some(h) = hover {
+        eprintln!("[spectre-ls] [HOVER] returning user-defined hover");
         Some(create_hover_response(h))
     } else if let Some(stdlib_hover) = get_stdlib_hover_at_position(&source, offset) {
         eprintln!(
-            "[spectre-ls] stdlib hover result: {:?}",
-            stdlib_hover.signature
+            "[spectre-ls] [HOVER] returning stdlib hover: {:?}",
+            (&stdlib_hover.signature, &stdlib_hover.documentation)
         );
         Some(create_hover_response(stdlib_hover))
     } else {
@@ -476,7 +539,7 @@ fn extract_word_at(chars: &[char], offset: usize) -> String {
 fn handle_definition(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
     let params: lsp_types::GotoDefinitionParams =
         serde_json::from_value(req.params.clone()).ok()?;
@@ -522,7 +585,7 @@ fn handle_definition(
 fn handle_document_symbol(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
     let params: lsp_types::DocumentSymbolParams =
         serde_json::from_value(req.params.clone()).ok()?;
@@ -579,8 +642,10 @@ fn convert_document_symbol(source: &str, s: DocumentSymbol) -> lsp_types::Docume
 fn handle_signature_help(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
+    eprintln!("[spectre-ls] [SIGHELP] ===== START =====");
+
     let params: lsp_types::SignatureHelpParams = serde_json::from_value(req.params.clone()).ok()?;
     let uri = params
         .text_document_position_params
@@ -589,23 +654,32 @@ fn handle_signature_help(
         .to_string();
     let position = params.text_document_position_params.position;
 
+    eprintln!(
+        "[spectre-ls] [SIGHELP] uri={}, line={}, char={}",
+        uri, position.line, position.character
+    );
+
     let source = {
         let docs = documents.lock().unwrap();
         docs.get(&uri)?.clone()
     };
-    let offset = offset_from_position(&source, position);
 
     eprintln!(
-        "[spectre-ls] signature help at uri={} offset={}",
-        uri, offset
+        "[spectre-ls] [SIGHELP] document retrieved, size={} bytes",
+        source.len()
     );
 
+    let offset = offset_from_position(&source, position);
+
+    eprintln!("[spectre-ls] [SIGHELP] converted to offset={}", offset);
+
     let analysis = get_analysis(&uri, documents, analyses)?;
+    eprintln!("[spectre-ls] [SIGHELP] analysis retrieved");
     let sig_help = signature_help_at(&analysis, offset, &source);
 
     eprintln!(
-        "[spectre-ls] signature help result: {:?}",
-        sig_help.as_ref().map(|s| &s.label)
+        "[spectre-ls] [SIGHELP] signature_help_at returned: {:?}",
+        sig_help.as_ref().map(|s| (&s.label, &s.parameters))
     );
 
     let result = sig_help.map(|sh| create_signature_help_response(sh));
@@ -755,7 +829,7 @@ fn extract_fn_name_before(chars: &[char], paren_pos: usize) -> Option<(String, S
 fn handle_completion(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    _analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    _analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
     let params: lsp_types::CompletionParams = serde_json::from_value(req.params.clone()).ok()?;
     let uri = params.text_document_position.text_document.uri.to_string();
@@ -1102,7 +1176,7 @@ fn get_analysis_completions_for_prefix(
 fn handle_references(
     req: &lsp_server::Request,
     documents: &Arc<Mutex<HashMap<String, String>>>,
-    analyses: &Arc<Mutex<HashMap<String, DocumentAnalysis>>>,
+    analyses: &Arc<Mutex<HashMap<String, Arc<DocumentAnalysis>>>>,
 ) -> Option<lsp_server::Response> {
     let params: lsp_types::ReferenceParams = serde_json::from_value(req.params.clone()).ok()?;
     let uri = params.text_document_position.text_document.uri.to_string();

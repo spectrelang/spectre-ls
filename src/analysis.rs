@@ -288,9 +288,9 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
 
     let var_scopes = build_scopes(&module);
 
+    let src: Vec<char> = source.chars().collect();
     for (span, ctx) in &ident_spans {
         if let IdentContext::VariableRef = ctx {
-            let src: Vec<char> = source.chars().collect();
             if span.start < src.len() {
                 let name: String = src[span.start..span.end.min(src.len())].iter().collect();
                 for scope in &var_scopes {
