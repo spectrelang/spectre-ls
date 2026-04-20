@@ -146,7 +146,7 @@ pub fn analyze(source: &str) -> DocumentAnalysis {
                 };
 
                 let sig = format!(
-                    "fn {}({}) -> {}",
+                    "fn {}({}) {}",
                     f.name,
                     f.params
                         .iter()
@@ -947,7 +947,7 @@ pub fn hover_closest(
                     f.return_type.display()
                 };
                 let sig = format!(
-                    "fn {}({}) -> {}",
+                    "fn {}({}) {}",
                     f.name,
                     f.params
                         .iter()
@@ -1074,7 +1074,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                         };
 
                         let mut sig = format!(
-                            "fn {}({}) -> {}",
+                            "fn {}({}) {}",
                             f.name,
                             f.params
                                 .iter()
@@ -1136,7 +1136,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                         };
 
                         let mut sig = format!(
-                            "fn {}({}) -> {}",
+                            "fn {}({}) {}",
                             f.name,
                             f.params
                                 .iter()
@@ -1316,7 +1316,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                             };
                             let sig = if let Some(self_ty) = &f.self_type {
                                 format!(
-                                    "fn ({}).{}({}) -> {}",
+                                    "fn ({}).{}({}) {}",
                                     self_ty,
                                     f.name,
                                     f.params
@@ -1328,7 +1328,7 @@ pub fn hover_at(analysis: &DocumentAnalysis, offset: usize, source: &str) -> Opt
                                 )
                             } else {
                                 format!(
-                                    "fn {}({}) -> {}",
+                                    "fn {}({}) {}",
                                     f.name,
                                     f.params
                                         .iter()
@@ -1745,7 +1745,7 @@ pub fn signature_help_at(
     };
 
     let label = format!(
-        "fn {}({}) -> {}",
+        "fn {}({}) {}",
         func.name,
         func.params
             .iter()
