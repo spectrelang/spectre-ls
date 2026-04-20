@@ -412,7 +412,7 @@ pub fn get_stdlib_signature_help(
 
 fn create_function_hover(func: &FunctionInfo) -> HoverResult {
     let mut sig = format!(
-        "fn {}({}) -> {}",
+        "fn {}({}) {}",
         func.full_name,
         func.params
             .iter()

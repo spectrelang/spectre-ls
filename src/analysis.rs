@@ -1925,9 +1925,9 @@ pub fn document_symbols(analysis: &DocumentAnalysis) -> Vec<DocumentSymbol> {
                 }
 
                 let ret_str = if f.returns_untrusted {
-                    format!("-> {}!", f.return_type.display())
+                    format!(" ({}!)", f.return_type.display())
                 } else {
-                    format!("-> {}", f.return_type.display())
+                    format!(" ({})", f.return_type.display())
                 };
 
                 symbols.push(DocumentSymbol {

@@ -546,7 +546,7 @@ fn get_builtin_hover_at_position(source: &str, offset: usize) -> Option<HoverRes
 fn get_builtin_hover(name: &str) -> Option<HoverResult> {
     match name {
         "get" => Some(HoverResult {
-            signature: "fn @get[T](list: list[T], index: int) -> option[T]".to_string(),
+            signature: "fn @get[T](list: list[T], index: i32) -> option[T]".to_string(),
             documentation:
                 "Gets an element from a list by index. Returns none if index is out of bounds."
                     .to_string(),
@@ -556,7 +556,7 @@ fn get_builtin_hover(name: &str) -> Option<HoverResult> {
             documentation: "Appends a value to the end of a list.".to_string(),
         }),
         "reserve" => Some(HoverResult {
-            signature: "fn @reserve[T](list: &list[T], capacity: int)".to_string(),
+            signature: "fn @reserve[T](list: &list[T], capacity: i32)".to_string(),
             documentation: "Reserves capacity in a list for future elements without adding any."
                 .to_string(),
         }),
@@ -565,11 +565,11 @@ fn get_builtin_hover(name: &str) -> Option<HoverResult> {
             documentation: "Prints a string to stdout with a newline.".to_string(),
         }),
         "len" => Some(HoverResult {
-            signature: "fn @len[T](list: list[T]) -> int".to_string(),
+            signature: "fn @len[T](list: list[T]) i32".to_string(),
             documentation: "Returns the length of a list.".to_string(),
         }),
         "alloc" => Some(HoverResult {
-            signature: "fn @alloc(size: usize) -> ref void".to_string(),
+            signature: "fn @alloc(size: usize) ref void".to_string(),
             documentation: "Allocates raw memory. Returns a pointer to uninitialized memory."
                 .to_string(),
         }),
@@ -578,24 +578,24 @@ fn get_builtin_hover(name: &str) -> Option<HoverResult> {
             documentation: "Frees previously allocated raw memory.".to_string(),
         }),
         "snprintf" => Some(HoverResult {
-            signature: "fn @snprintf(buf: &ref void, size: usize, fmt: string, args: ...) -> int"
+            signature: "fn @snprintf(buf: &ref void, size: usize, fmt: string, args: ...) i32"
                 .to_string(),
             documentation: "Formats a string into a buffer.".to_string(),
         }),
         "dprintf" => Some(HoverResult {
-            signature: "fn @dprintf(fd: int, fmt: string, args: ...) -> int".to_string(),
+            signature: "fn @dprintf(fd: i32, fmt: string, args: ...) i32".to_string(),
             documentation: "Formats and prints to a file descriptor.".to_string(),
         }),
         "load8" => Some(HoverResult {
-            signature: "fn @load8(addr: ref void) -> u8".to_string(),
+            signature: "fn @load8(addr: ref void) u8".to_string(),
             documentation: "Loads a byte from memory.".to_string(),
         }),
         "ptradd" => Some(HoverResult {
-            signature: "fn @ptradd[T](ptr: ref T, offset: usize) -> ref T".to_string(),
+            signature: "fn @ptradd[T](ptr: ref T, offset: usize) ref T".to_string(),
             documentation: "Adds an offset to a pointer.".to_string(),
         }),
         "load" => Some(HoverResult {
-            signature: "fn @load[T](addr: ref T) -> T".to_string(),
+            signature: "fn @load[T](addr: ref T) T".to_string(),
             documentation: "Loads a value from memory.".to_string(),
         }),
         "memcpy" => Some(HoverResult {
