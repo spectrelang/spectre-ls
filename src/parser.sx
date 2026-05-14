@@ -1,7 +1,6 @@
 val str         = use("std/string")
 val coll        = use("std/collections")
 
-extern (C) fn strlen(s: ref u8) i64 = "strlen"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
 pub val SYM_FUNCTION: i64 = 0
@@ -79,7 +78,7 @@ fn raw_dup(s: ref u8, len: i64) ref u8 = trust {
 
 fn raw_dup_cstr(s: ref u8) ref u8 = trust {
     if s == none { return none }
-    val len: i64 = strlen(s)
+    val len: i64 = str.len_raw(s)
     if len == 0 { return none }
     return raw_dup(s, len)
 }
@@ -443,7 +442,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     }
     if content == none { return syms }
 
-    val content_len: i64 = strlen(content)
+    val content_len: i64 = str.len_raw(content)
     val pos: mut i64 = 0
     val line_num: mut i64 = 0
     val doc_buf: mut str.String = str.new()
@@ -606,7 +605,7 @@ pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref Ca
 
 pub fn uri_to_path(uri: ref u8) ref u8 = trust {
     if uri == none { return none }
-    val len: i64 = strlen(uri)
+    val len: i64 = str.len_raw(uri)
     if starts_with_n(uri, len, "file://", 7) {
         return raw_dup_cstr(@ptradd(uri, 7))
     }
@@ -615,7 +614,7 @@ pub fn uri_to_path(uri: ref u8) ref u8 = trust {
 
 pub fn path_to_uri(path: ref u8) ref u8 = trust {
     if path == none { return none }
-    val plen: i64 = strlen(path)
+    val plen: i64 = str.len_raw(path)
     val prefix: ref u8 = "file://"
     val pfx_len: i64 = 7
     val total: i64 = pfx_len + plen + 1
@@ -629,7 +628,7 @@ pub fn path_to_uri(path: ref u8) ref u8 = trust {
 
 pub fn path_dirname(path: ref u8) ref u8 = trust {
     if path == none { return none }
-    val len: i64 = strlen(path)
+    val len: i64 = str.len_raw(path)
     val i: mut i64 = len - 1
     for {
         if i < 0 { return raw_dup_cstr(".") }

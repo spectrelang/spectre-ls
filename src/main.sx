@@ -1,9 +1,9 @@
 val coll     = use("std/collections")
 val stdio    = use("std/stdio")
 val handlers = use("./handlers")
+val str      = use("std/string")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
-extern (C) fn strlen(s: ref u8) i64 = "strlen"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
 val g_doc_store: mut ref void = none
@@ -38,7 +38,7 @@ fn read_message() option[ref u8] = trust {
             @free(line_buf as ref void)
             return none
         }
-        val llen: i64 = strlen(line_buf)
+        val llen: i64 = str.len_raw(line_buf)
         if llen == 0 { break }
         if llen == 1 && @load8(line_buf as ref void) == '\n' { break }
         if llen == 2 &&
