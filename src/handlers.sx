@@ -47,13 +47,43 @@ fn read_file_to_heap(path: ref u8) ref u8 = trust {
     }
 }
 
+fn write_all(fd: i32, buf: ref void, count: usize) bool = trust {
+    val written: mut i64 = 0
+    val total: i64 = count as i64
+    for {
+        if written >= total { break }
+        val n: i64 = write(fd, @ptradd(buf as ref u8, written) as ref void, (total - written) as usize)
+        if n <= 0 { return false }
+        written = written + n
+    }
+    return true
+}
+
 pub fn write_response(body: ref u8) void = trust {
-    val body_len: i64 = str.len_raw(body)
-    val header: ref u8 = @fmt("Content-Length: {d}\r\n\r\n", {body_len})
+    if body == none { return }
+    val body_len: i64 = strlen(body)
+    if body_len < 0 { return }
+    val header: ref u8 = @fmt("Content-Length: {d}", {body_len})
     if header == none { return }
     val hlen: i64 = strlen(header)
-    write(1 as i32, header as ref void, hlen as usize)
-    write(1 as i32, body   as ref void, body_len as usize)
+    val sep: ref u8 = @alloc(5) as ref u8
+    if sep == none {
+        @free(header as ref void)
+        return
+    }
+    @store8(@ptradd(sep, 0), '\r')
+    @store8(@ptradd(sep, 1), '\n')
+    @store8(@ptradd(sep, 2), '\r')
+    @store8(@ptradd(sep, 3), '\n')
+    @store8(@ptradd(sep, 4), 0)
+    if hlen >= 0 {
+        if write_all(1 as i32, header as ref void, hlen as usize) {
+            if write_all(1 as i32, sep as ref void, 4 as usize) {
+                write_all(1 as i32, body as ref void, body_len as usize)
+            }
+        }
+    }
+    @free(sep as ref void)
     @free(header as ref void)
 }
 
