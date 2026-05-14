@@ -39,12 +39,12 @@ pub fn sym_alloc() ref Symbol = trust {
 
 pub fn sym_free(s: mut ref Symbol) void = trust {
     if s == none { return }
-    if s.name     != none { @free(s.name     as ref void) }
-    if s.receiver != none { @free(s.receiver as ref void) }
+    if s.name     != none { @free(s.name      as ref void) }
+    if s.receiver != none { @free(s.receiver  as ref void) }
     if s.signature!= none { @free(s.signature as ref void) }
-    if s.doc      != none { @free(s.doc      as ref void) }
-    if s.file     != none { @free(s.file     as ref void) }
-    if s.ret_type != none { @free(s.ret_type as ref void) }
+    if s.doc      != none { @free(s.doc       as ref void) }
+    if s.file     != none { @free(s.file      as ref void) }
+    if s.ret_type != none { @free(s.ret_type  as ref void) }
     if s.params   != none { coll.PtrList.free(s.params) }
     @free(s as ref void)
 }
