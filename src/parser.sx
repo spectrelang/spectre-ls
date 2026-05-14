@@ -62,7 +62,7 @@ pub fn free_sym_list(list: mut ref void) void = trust {
             }
             none => {}
         }
-        i = i + 1
+        i++
     }
     coll.PtrList.free(list)
 }
