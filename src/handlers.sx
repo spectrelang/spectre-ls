@@ -114,7 +114,7 @@ fn sb_escape(sb: str.StringBuilder, s: ref u8) void = trust {
         } else {
             str.StringBuilder.append_char(sb, c)
         }
-        i = i + 1
+        i++
     }
 }
 
@@ -220,7 +220,7 @@ fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust 
             }
             none => {}
         }
-        i = i + 1
+        i++
     }
     return none
 }
@@ -241,8 +241,105 @@ fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust 
             }
             none => {}
         }
+        i++
+    }
+    return none
+}
+
+fn is_ident_start_h(c: u8) bool = {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+fn is_ident_cont_h(c: u8) bool = {
+    return is_ident_start_h(c) || (c >= 48 && c <= 57)
+}
+
+fn param_name_eq(param_decl: ref u8, word: ref u8) bool = trust {
+    if param_decl == none || word == none { return false }
+    val plen: i64 = str.len_raw(param_decl)
+    val wlen: i64 = str.len_raw(word)
+    if plen <= 0 || wlen <= 0 { return false }
+
+    val i: mut i64 = 0
+    for {
+        if i >= plen { break }
+        val c: u8 = @load8(@ptradd(param_decl, i))
+        if c != ' ' && c != '\t' { break }
+        i++
+    }
+    if i >= plen { return false }
+    if !is_ident_start_h(@load8(@ptradd(param_decl, i))) { return false }
+
+    val j: mut i64 = i + 1
+    for {
+        if j >= plen { break }
+        if !is_ident_cont_h(@load8(@ptradd(param_decl, j))) { break }
+        j++
+    }
+
+    val nlen: i64 = j - i
+    if nlen != wlen { return false }
+    return strncmp(@ptradd(param_decl, i), word, nlen as usize) == 0
+}
+
+fn find_enclosing_callable(sym_list: ref void, line: i64) ref parser.Symbol = trust {
+    if sym_list == none { return none }
+    val n: usize = coll.PtrList.len(sym_list)
+    val i: mut usize = 0
+    val best_line: mut i64 = -1
+    val best: mut ref parser.Symbol = none
+
+    for {
+        if i >= n { break }
+        match coll.PtrList.get(sym_list, i) {
+            some v => {
+                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                if sym != none &&
+                   (sym.kind == parser.SYM_FUNCTION || sym.kind == parser.SYM_METHOD) &&
+                   sym.line <= line && sym.line >= best_line {
+                    best = sym
+                    best_line = sym.line
+                }
+            }
+            none => {}
+        }
         i = i + 1
     }
+    return best
+}
+
+fn lookup_parameter_decl(
+    sym_store: ref void,
+    current_uri: ref u8,
+    line: i64,
+    word: ref u8
+) ref u8 = trust {
+    if current_uri == none || word == none { return none }
+
+    val cur_syms: mut ref void = none
+    match coll.StringMap.get(sym_store, current_uri) {
+        some v => { cur_syms = @bitcast(v, ref void) }
+        none   => {}
+    }
+    if cur_syms == none { return none }
+
+    val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
+    if fn_sym == none || fn_sym.params == none { return none }
+
+    val n: usize = coll.PtrList.len(fn_sym.params)
+    val i: mut usize = 0
+    for {
+        if i >= n { break }
+        match coll.PtrList.get(fn_sym.params, i) {
+            some v => {
+                val pstr: ref u8 = @bitcast(v, ref void) as ref u8
+                if param_name_eq(pstr, word) { return pstr }
+            }
+            none => {}
+        }
+        i = i + 1
+    }
+
     return none
 }
 
@@ -393,6 +490,26 @@ pub fn handle_hover(
         if module_alias != none {
             @memcpy(module_alias as ref void, @ptradd(content, ms), ml as usize)
             @store8(@ptradd(module_alias, ml), 0)
+        }
+    }
+
+    if module_alias == none {
+        val param_decl: ref u8 = lookup_parameter_decl(sym_store, uri, line, word)
+        if param_decl != none {
+            val sb: str.StringBuilder = str.StringBuilder.new()
+            make_base(sb, id_raw)
+            str.StringBuilder.append_cstr(sb, ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"")
+            str.StringBuilder.append_cstr(sb, "```spectre\\n")
+            sb_escape(sb, param_decl)
+            str.StringBuilder.append_cstr(sb, "\\n```\\n\\nFunction parameter")
+            str.StringBuilder.append_cstr(sb, "\"}}}")
+            val built: mut str.String = str.StringBuilder.build(sb)
+            write_response(str.cstr(built))
+            str.string_free(built)
+            str.StringBuilder.free(sb)
+            if word         != none { @free(word         as ref void) }
+            if module_alias != none { @free(module_alias as ref void) }
+            return
         }
     }
 
@@ -568,7 +685,7 @@ pub fn handle_document_symbol(
                 }
                 none => {}
             }
-            i = i + 1
+            i++
         }
     }
 
@@ -656,7 +773,7 @@ pub fn handle_signature_help(
                     str.StringBuilder.append_cstr(sb, "{\"label\":\"\"}")
                 }
             }
-            i = i + 1
+            i++
         }
         str.StringBuilder.append_cstr(sb, "]")
     }
