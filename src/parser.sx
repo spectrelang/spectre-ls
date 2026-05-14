@@ -95,7 +95,7 @@ fn skip_ws(s: ref u8, i: i64, len: i64) i64 = trust {
         if j >= len { break }
         val c: u8 = @load8(@ptradd(s, j))
         if c != ' ' && c != '\t' { break }
-        j = j + 1
+        j++
     }
     return j
 }
@@ -116,7 +116,7 @@ fn ident_len_at(s: ref u8, i: i64, len: i64) i64 = trust {
     for {
         if j >= len { break }
         if !is_ident_cont(@load8(@ptradd(s, j))) { break }
-        j = j + 1
+        j++
     }
     return j - i
 }
