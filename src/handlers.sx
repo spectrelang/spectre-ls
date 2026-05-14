@@ -1,0 +1,776 @@
+val str        = use("std/string")
+val allocators = use("std/allocators")
+val coll       = use("std/collections")
+val json       = use("std/json")
+val fs         = use("std/fs")
+val parser     = use("./parser")
+
+extern (C) fn strlen(s: ref u8) i64 = "strlen"
+extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
+extern (C) fn write(fd: i32, buf: ref void, count: usize) i64 = "write"
+
+fn raw_dup_h(s: ref u8, len: i64) ref u8 = trust {
+    if s == none || len <= 0 { return none }
+    val buf: ref u8 = @alloc(len + 1) as ref u8
+    if buf == none { return none }
+    @memcpy(buf as ref void, s as ref void, len as usize)
+    @store8(@ptradd(buf, len), 0)
+    return buf
+}
+
+fn raw_dup_cstr_h(s: ref u8) ref u8 = trust {
+    if s == none { return none }
+    val len: i64 = strlen(s)
+    if len == 0 { return none }
+    return raw_dup_h(s, len)
+}
+
+fn starts_with_h(s: ref u8, slen: i64, prefix: ref u8, plen: i64) bool = trust {
+    if plen > slen || plen <= 0 { return false }
+    return strncmp(s, prefix, plen as usize) == 0
+}
+
+fn read_file_to_heap(path: ref u8) ref u8 = trust {
+    if path == none { return none }
+    val arena_res = allocators.Arena.new(2097152 as usize)
+    match arena_res {
+        err _ => { return none }
+        ok arena => {
+            val content: mut ref u8 = none
+            match fs.read_all[allocators.Arena](arena, path) {
+                some c => { content = raw_dup_cstr_h(c) }
+                none   => {}
+            }
+            allocators.Arena.free(arena)
+            return content
+        }
+    }
+}
+
+pub fn write_response(body: ref u8) void = trust {
+    val body_len: i64 = str.len_raw(body)
+    val header: ref u8 = @fmt("Content-Length: {d}\r\n\r\n", {body_len})
+    if header == none { return }
+    val hlen: i64 = strlen(header)
+    write(1 as i32, header as ref void, hlen as usize)
+    write(1 as i32, body   as ref void, body_len as usize)
+    @free(header as ref void)
+}
+
+fn sb_append_int(sb: str.StringBuilder, n: i64) void = trust {
+    val s: ref u8 = @fmt("{d}", {n})
+    if s == none { return }
+    str.StringBuilder.append_cstr(sb, s)
+    @free(s as ref void)
+}
+
+fn sb_escape(sb: str.StringBuilder, s: ref u8) void = trust {
+    if s == none { return }
+    val len: i64 = strlen(s)
+    val i: mut i64 = 0
+    for {
+        if i >= len { break }
+        val c: u8 = @load8(@ptradd(s, i))
+        if c == '"' {
+            str.StringBuilder.append_cstr(sb, "\\\"")
+        } elif c == '\\' {
+            str.StringBuilder.append_cstr(sb, "\\\\")
+        } elif c == '\n' {
+            str.StringBuilder.append_cstr(sb, "\\n")
+        } elif c == '\r' {
+            str.StringBuilder.append_cstr(sb, "\\r")
+        } elif c == '\t' {
+            str.StringBuilder.append_cstr(sb, "\\t")
+        } else {
+            str.StringBuilder.append_char(sb, c)
+        }
+        i = i + 1
+    }
+}
+
+fn make_base(sb: str.StringBuilder, id_raw: ref void) void = trust {
+    str.StringBuilder.append_cstr(sb, "{\"jsonrpc\":\"2.0\",\"id\":")
+    if id_raw == none {
+        str.StringBuilder.append_cstr(sb, "null")
+        return
+    }
+    val ik: json.JsonKind = json.val_kind(id_raw)
+    if ik == json.JsonKind.Int || ik == json.JsonKind.UInt {
+        val n: i64 = json.val_get_int(id_raw)
+        sb_append_int(sb, n)
+    } else {
+        val s: ref u8 = json.val_get_str(id_raw)
+        str.StringBuilder.append_cstr(sb, "\"")
+        sb_escape(sb, s)
+        str.StringBuilder.append_cstr(sb, "\"")
+    }
+}
+
+pub fn send_null_result(id_raw: ref void) void = trust {
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":null}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn send_error(id_raw: ref void, code: i64, msg: ref u8) void = trust {
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"error\":{\"code\":")
+    sb_append_int(sb, code)
+    str.StringBuilder.append_cstr(sb, ",\"message\":\"")
+    sb_escape(sb, msg)
+    str.StringBuilder.append_cstr(sb, "\"}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn handle_initialize(id_raw: ref void) void = trust {
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"capabilities\":{")
+    str.StringBuilder.append_cstr(sb, "\"textDocumentSync\":1,")
+    str.StringBuilder.append_cstr(sb, "\"hoverProvider\":true,")
+    str.StringBuilder.append_cstr(sb, "\"definitionProvider\":true,")
+    str.StringBuilder.append_cstr(sb, "\"documentSymbolProvider\":true,")
+    str.StringBuilder.append_cstr(sb, "\"signatureHelpProvider\":{")
+    str.StringBuilder.append_cstr(sb, "\"triggerCharacters\":[\"(\",\",\"]")
+    str.StringBuilder.append_cstr(sb, "}},")
+    str.StringBuilder.append_cstr(sb, "\"serverInfo\":{\"name\":\"spectre-ls\",\"version\":\"0.1.0\"}")
+    str.StringBuilder.append_cstr(sb, "}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+fn get_str_field(obj: ref void, key: ref u8) ref u8 = trust {
+    match json.obj_get_str(obj, key) {
+        some s => { return s }
+        none   => { return none }
+    }
+}
+
+fn get_int_field(obj: ref void, key: ref u8) i64 = trust {
+    match json.obj_get_int(obj, key) {
+        some n => { return n }
+        none   => { return 0 }
+    }
+}
+
+fn get_obj_field(obj: ref void, key: ref u8) ref void = trust {
+    match json.obj_get(obj, key) {
+        some v => {
+            if json.val_is_object(v) { return v }
+            return none
+        }
+        none => { return none }
+    }
+}
+
+fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust {
+    if sym_list == none || name == none { return none }
+    val n: usize = coll.PtrList.len(sym_list)
+    val i: mut usize = 0
+    for {
+        if i >= n { break }
+        match coll.PtrList.get(sym_list, i) {
+            some v => {
+                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                if sym != none && sym.name != none {
+                    if str.rchar_cmp(sym.name, name) == 0 {
+                        return sym
+                    }
+                }
+            }
+            none => {}
+        }
+        i = i + 1
+    }
+    return none
+}
+
+fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust {
+    if sym_list == none || alias == none { return none }
+    val n: usize = coll.PtrList.len(sym_list)
+    val i: mut usize = 0
+    for {
+        if i >= n { break }
+        match coll.PtrList.get(sym_list, i) {
+            some v => {
+                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                if sym != none && sym.kind == parser.SYM_MODULE &&
+                   sym.name != none && str.rchar_cmp(sym.name, alias) == 0 {
+                    return sym
+                }
+            }
+            none => {}
+        }
+        i = i + 1
+    }
+    return none
+}
+
+fn ensure_parsed(doc_store: mut ref void, sym_store: mut ref void, file_path: ref u8) void = trust {
+    if file_path == none { return }
+    val uri: ref u8 = parser.path_to_uri(file_path)
+    if uri == none { return }
+    if coll.StringMap.contains(sym_store, uri) {
+        @free(uri as ref void)
+        return
+    }
+    val content: ref u8 = read_file_to_heap(file_path)
+    if content != none {
+        if !coll.StringMap.contains(doc_store, uri) {
+            val cv: usize = @bitcast(content as ref void, usize)
+            coll.StringMap.set(doc_store, uri, cv)
+        }
+        val syms: ref void = parser.parse_file(file_path, content)
+        if syms != none {
+            val sv: usize = @bitcast(syms, usize)
+            coll.StringMap.set(sym_store, uri, sv)
+        } else {
+            @free(content as ref void)
+        }
+    }
+    @free(uri as ref void)
+}
+
+fn lookup_symbol(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    current_uri: ref u8,
+    current_file: ref u8,
+    word: ref u8,
+    module_alias: ref u8
+) ref parser.Symbol = trust {
+    if word == none { return none }
+
+    val cur_syms: mut ref void = none
+    match coll.StringMap.get(sym_store, current_uri) {
+        some v => { cur_syms = @bitcast(v, ref void) }
+        none   => {}
+    }
+
+    if module_alias != none {
+        if cur_syms == none { return none }
+        val imp: ref parser.Symbol = find_import_sym(cur_syms, module_alias)
+        if imp == none || imp.ret_type == none { return none }
+        val mod_file: ref u8 = parser.resolve_module_path(current_file, imp.ret_type)
+        if mod_file == none { return none }
+        ensure_parsed(doc_store, sym_store, mod_file)
+        val mod_uri: ref u8 = parser.path_to_uri(mod_file)
+        @free(mod_file as ref void)
+        if mod_uri == none { return none }
+        val mod_syms: mut ref void = none
+        match coll.StringMap.get(sym_store, mod_uri) {
+            some v => { mod_syms = @bitcast(v, ref void) }
+            none   => {}
+        }
+        @free(mod_uri as ref void)
+        if mod_syms == none { return none }
+        return find_sym_by_name(mod_syms, word)
+    }
+
+    if cur_syms != none {
+        val found: ref parser.Symbol = find_sym_by_name(cur_syms, word)
+        if found != none { return found }
+    }
+
+    return none
+}
+
+fn sym_kind_to_lsp(kind: i64) i64 = {
+    if kind == parser.SYM_FUNCTION { return 12 }
+    if kind == parser.SYM_METHOD   { return 6  }
+    if kind == parser.SYM_TYPE     { return 23 }
+    if kind == parser.SYM_ENUM     { return 10 }
+    if kind == parser.SYM_UNION    { return 23 }
+    if kind == parser.SYM_MODULE   { return 2  }
+    return 13
+}
+
+fn append_range(sb: str.StringBuilder, line: i64, cs: i64, ce: i64) void = trust {
+    str.StringBuilder.append_cstr(sb, "{\"start\":{\"line\":")
+    sb_append_int(sb, line)
+    str.StringBuilder.append_cstr(sb, ",\"character\":")
+    sb_append_int(sb, cs)
+    str.StringBuilder.append_cstr(sb, "},\"end\":{\"line\":")
+    sb_append_int(sb, line)
+    str.StringBuilder.append_cstr(sb, ",\"character\":")
+    sb_append_int(sb, ce)
+    str.StringBuilder.append_cstr(sb, "}}")
+}
+
+fn first_line_dup(s: ref u8) ref u8 = trust {
+    if s == none { return none }
+    val len: i64 = strlen(s)
+    val i: mut i64 = 0
+    for {
+        if i >= len { break }
+        val c: u8 = @load8(@ptradd(s, i))
+        if c == '\n' || c == '\r' { break }
+        i = i + 1
+    }
+    if i == 0 { return none }
+    return raw_dup_h(s, i)
+}
+
+pub fn handle_hover(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    id_raw: ref void,
+    params: ref void
+) void = trust {
+    if params == none { send_null_result(id_raw) return }
+    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    val pos_obj: ref void = get_obj_field(params, "position")
+    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    val line: i64   = get_int_field(pos_obj, "line")
+    val col: i64    = get_int_field(pos_obj, "character")
+    if uri == none { send_null_result(id_raw) return }
+
+    val content: mut ref u8 = none
+    match coll.StringMap.get(doc_store, uri) {
+        some v => { content = @bitcast(v, ref void) as ref u8 }
+        none   => {}
+    }
+    if content == none { send_null_result(id_raw) return }
+
+    val ws: mut i64 = -1
+    val wl: mut i64 = 0
+    parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
+    if ws < 0 || wl <= 0 { send_null_result(id_raw) return }
+
+    val word: ref u8 = @alloc(wl + 1) as ref u8
+    if word == none { send_null_result(id_raw) return }
+    @memcpy(word as ref void, @ptradd(content, ws), wl as usize)
+    @store8(@ptradd(word, wl), 0)
+
+    val ms: mut i64 = -1
+    val ml: mut i64 = 0
+    parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
+
+    val module_alias: mut ref u8 = none
+    if ms >= 0 && ml > 0 {
+        module_alias = @alloc(ml + 1) as ref u8
+        if module_alias != none {
+            @memcpy(module_alias as ref void, @ptradd(content, ms), ml as usize)
+            @store8(@ptradd(module_alias, ml), 0)
+        }
+    }
+
+    val file_path: ref u8 = parser.uri_to_path(uri)
+    val sym: ref parser.Symbol = lookup_symbol(
+        doc_store, sym_store, uri, file_path, word, module_alias
+    )
+    if file_path    != none { @free(file_path    as ref void) }
+    if word         != none { @free(word         as ref void) }
+    if module_alias != none { @free(module_alias as ref void) }
+
+    if sym == none { send_null_result(id_raw) return }
+
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"")
+
+    if sym.signature != none {
+        str.StringBuilder.append_cstr(sb, "```spectre\\n")
+        sb_escape(sb, sym.signature)
+        str.StringBuilder.append_cstr(sb, "\\n```")
+    }
+    if sym.doc != none && strlen(sym.doc) > 0 {
+        str.StringBuilder.append_cstr(sb, "\\n\\n")
+        sb_escape(sb, sym.doc)
+    }
+
+    str.StringBuilder.append_cstr(sb, "\"}}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn handle_definition(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    id_raw: ref void,
+    params: ref void
+) void = trust {
+    if params == none { send_null_result(id_raw) return }
+    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    val pos_obj: ref void = get_obj_field(params, "position")
+    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    val line: i64   = get_int_field(pos_obj, "line")
+    val col: i64    = get_int_field(pos_obj, "character")
+    if uri == none { send_null_result(id_raw) return }
+
+    val content: mut ref u8 = none
+    match coll.StringMap.get(doc_store, uri) {
+        some v => { content = @bitcast(v, ref void) as ref u8 }
+        none   => {}
+    }
+    if content == none { send_null_result(id_raw) return }
+
+    val ws: mut i64 = -1
+    val wl: mut i64 = 0
+    parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
+    if ws < 0 || wl <= 0 { send_null_result(id_raw) return }
+
+    val word: ref u8 = @alloc(wl + 1) as ref u8
+    if word == none { send_null_result(id_raw) return }
+    @memcpy(word as ref void, @ptradd(content, ws), wl as usize)
+    @store8(@ptradd(word, wl), 0)
+
+    val ms: mut i64 = -1
+    val ml: mut i64 = 0
+    parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
+
+    val module_alias: mut ref u8 = none
+    if ms >= 0 && ml > 0 {
+        module_alias = @alloc(ml + 1) as ref u8
+        if module_alias != none {
+            @memcpy(module_alias as ref void, @ptradd(content, ms), ml as usize)
+            @store8(@ptradd(module_alias, ml), 0)
+        }
+    }
+
+    val file_path: ref u8 = parser.uri_to_path(uri)
+    val sym: ref parser.Symbol = lookup_symbol(
+        doc_store, sym_store, uri, file_path, word, module_alias
+    )
+    if file_path    != none { @free(file_path    as ref void) }
+    if word         != none { @free(word         as ref void) }
+    if module_alias != none { @free(module_alias as ref void) }
+
+    if sym == none { send_null_result(id_raw) return }
+
+    val def_uri: mut ref u8 = none
+    if sym.file != none {
+        def_uri = parser.path_to_uri(sym.file)
+    } else {
+        def_uri = raw_dup_cstr_h(uri)
+    }
+    if def_uri == none { send_null_result(id_raw) return }
+
+    val name_len: i64 = str.len_raw(sym.name)
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"uri\":\"")
+    sb_escape(sb, def_uri)
+    str.StringBuilder.append_cstr(sb, "\",\"range\":")
+    append_range(sb, sym.line, sym.col, sym.col + name_len)
+    str.StringBuilder.append_cstr(sb, "}}")
+    @free(def_uri as ref void)
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn handle_document_symbol(
+    _: ref void,
+    sym_store: ref void,
+    id_raw: ref void,
+    params: ref void
+) void = trust {
+    if params == none { send_null_result(id_raw) return }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
+    if td_obj == none { send_null_result(id_raw) return }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    if uri == none { send_null_result(id_raw) return }
+
+    val sym_list: mut ref void = none
+    match coll.StringMap.get(sym_store, uri) {
+        some v => { sym_list = @bitcast(v, ref void) }
+        none   => {}
+    }
+
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":[")
+
+    if sym_list != none {
+        val n: usize = coll.PtrList.len(sym_list)
+        val i: mut usize = 0
+        val first: mut i64 = 1
+        for {
+            if i >= n { break }
+            match coll.PtrList.get(sym_list, i) {
+                some v => {
+                    val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                    if sym != none && sym.name != none {
+                        if first == 0 { str.StringBuilder.append_cstr(sb, ",") }
+                        first = 0
+                        val lsp_kind: i64 = sym_kind_to_lsp(sym.kind)
+                        val nl: i64 = str.len_raw(sym.name)
+                        str.StringBuilder.append_cstr(sb, "{\"name\":\"")
+                        sb_escape(sb, sym.name)
+                        if sym.receiver != none {
+                            str.StringBuilder.append_cstr(sb, " (")
+                            sb_escape(sb, sym.receiver)
+                            str.StringBuilder.append_cstr(sb, ")")
+                        }
+                        str.StringBuilder.append_cstr(sb, "\",\"kind\":")
+                        sb_append_int(sb, lsp_kind)
+                        str.StringBuilder.append_cstr(sb, ",\"range\":")
+                        append_range(sb, sym.line, 0, nl + 20)
+                        str.StringBuilder.append_cstr(sb, ",\"selectionRange\":")
+                        append_range(sb, sym.line, sym.col, sym.col + nl)
+                        if sym.doc != none && strlen(sym.doc) > 0 {
+                            val dl: ref u8 = first_line_dup(sym.doc)
+                            if dl != none {
+                                str.StringBuilder.append_cstr(sb, ",\"detail\":\"")
+                                sb_escape(sb, dl)
+                                str.StringBuilder.append_cstr(sb, "\"")
+                                @free(dl as ref void)
+                            }
+                        }
+                        str.StringBuilder.append_cstr(sb, "}")
+                    }
+                }
+                none => {}
+            }
+            i = i + 1
+        }
+    }
+
+    str.StringBuilder.append_cstr(sb, "]}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn handle_signature_help(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    id_raw: ref void,
+    params: ref void
+) void = trust {
+    if params == none { send_null_result(id_raw) return }
+    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    val pos_obj: ref void = get_obj_field(params, "position")
+    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    val line: i64   = get_int_field(pos_obj, "line")
+    val col: i64    = get_int_field(pos_obj, "character")
+    if uri == none { send_null_result(id_raw) return }
+
+    val content: mut ref u8 = none
+    match coll.StringMap.get(doc_store, uri) {
+        some v => { content = @bitcast(v, ref void) as ref u8 }
+        none   => {}
+    }
+    if content == none { send_null_result(id_raw) return }
+
+    val ctx_mem: ref void = @alloc(16)
+    if ctx_mem == none { send_null_result(id_raw) return }
+    @memset(ctx_mem, 0, 16)
+    val ctx: mut ref parser.CallContext = ctx_mem as ref parser.CallContext
+    parser.find_active_call(content, line, col, ctx)
+
+    if ctx.fn_name == none {
+        @free(ctx_mem)
+        send_null_result(id_raw)
+        return
+    }
+
+    val file_path: ref u8 = parser.uri_to_path(uri)
+    val sym: ref parser.Symbol = lookup_symbol(
+        doc_store, sym_store, uri, file_path, ctx.fn_name, none
+    )
+    if file_path != none { @free(file_path as ref void) }
+    val active_param: i64 = ctx.param_idx
+    @free(ctx_mem)
+
+    if sym == none { send_null_result(id_raw) return }
+
+    val sig_label: mut ref u8 = sym.name
+    if sym.signature != none { sig_label = sym.signature }
+
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"signatures\":[{\"label\":\"")
+    sb_escape(sb, sig_label)
+    str.StringBuilder.append_cstr(sb, "\"")
+
+    if sym.doc != none && strlen(sym.doc) > 0 {
+        str.StringBuilder.append_cstr(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
+        sb_escape(sb, sym.doc)
+        str.StringBuilder.append_cstr(sb, "\"}")
+    }
+
+    if sym.params != none && sym.param_count > 0 {
+        str.StringBuilder.append_cstr(sb, ",\"parameters\":[")
+        val n: usize = coll.PtrList.len(sym.params)
+        val i: mut usize = 0
+        for {
+            if i >= n { break }
+            if i > 0 { str.StringBuilder.append_cstr(sb, ",") }
+            match coll.PtrList.get(sym.params, i) {
+                some v => {
+                    val pstr: ref u8 = @bitcast(v, ref void) as ref u8
+                    str.StringBuilder.append_cstr(sb, "{\"label\":\"")
+                    sb_escape(sb, pstr)
+                    str.StringBuilder.append_cstr(sb, "\"}")
+                }
+                none => {
+                    str.StringBuilder.append_cstr(sb, "{\"label\":\"\"}")
+                }
+            }
+            i = i + 1
+        }
+        str.StringBuilder.append_cstr(sb, "]")
+    }
+
+    str.StringBuilder.append_cstr(sb, "}],\"activeSignature\":0,\"activeParameter\":")
+    sb_append_int(sb, active_param)
+    str.StringBuilder.append_cstr(sb, "}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
+pub fn update_document(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    uri: ref u8,
+    text: ref u8
+) void = trust {
+    if uri == none || text == none { return }
+    val text_copy: ref u8 = raw_dup_cstr_h(text)
+    if text_copy == none { return }
+
+    match coll.StringMap.get(doc_store, uri) {
+        some old_v => {
+            val old: ref u8 = @bitcast(old_v, ref void) as ref u8
+            if old != none { @free(old as ref void) }
+        }
+        none => {}
+    }
+    val tv: usize = @bitcast(text_copy as ref void, usize)
+    coll.StringMap.set(doc_store, uri, tv)
+
+    match coll.StringMap.get(sym_store, uri) {
+        some old_v => {
+            val old_syms: mut ref void = @bitcast(old_v, ref void)
+            if old_syms != none { parser.free_sym_list(old_syms) }
+        }
+        none => {}
+    }
+
+    val file_path: ref u8 = parser.uri_to_path(uri)
+    val syms: ref void    = parser.parse_file(file_path, text_copy)
+    if file_path != none { @free(file_path as ref void) }
+
+    if syms != none {
+        val sv: usize = @bitcast(syms, usize)
+        coll.StringMap.set(sym_store, uri, sv)
+    }
+}
+
+pub fn handle_did_open(
+    doc_store: ref void,
+    sym_store: ref void,
+    params: ref void
+) void = trust {
+    if params == none { return }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
+    if td_obj == none { return }
+    val uri:  ref u8 = get_str_field(td_obj, "uri")
+    val text: ref u8 = get_str_field(td_obj, "text")
+    if uri == none || text == none { return }
+    update_document(doc_store, sym_store, uri, text)
+}
+
+pub fn handle_did_change(
+    doc_store: ref void,
+    sym_store: ref void,
+    params: ref void
+) void = trust {
+    if params == none { return }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
+    if td_obj == none { return }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    if uri == none { return }
+
+    val changes: mut ref void = none
+    match json.obj_get(params, "contentChanges") {
+        some v => { if json.val_is_array(v) { changes = v } }
+        none   => {}
+    }
+    if changes == none { return }
+
+    val last_idx: usize = json.arr_len(changes)
+    if last_idx == 0 { return }
+    match json.arr_get(changes, last_idx - 1) {
+        some ch => {
+            val text: ref u8 = get_str_field(ch, "text")
+            if text != none { update_document(doc_store, sym_store, uri, text) }
+        }
+        none => {}
+    }
+}
+
+pub fn dispatch(
+    doc_store: ref void,
+    sym_store: ref void,
+    msg: ref u8
+) void = trust {
+    val doc_opt = json.parse(msg)
+    match doc_opt {
+        none => { return }
+        some doc => {
+            val root: ref void = json.doc_root(doc)
+
+            val method: mut ref u8 = none
+            match json.obj_get_str(root, "method") {
+                some m => { method = m }
+                none   => { json.doc_free(doc) return }
+            }
+
+            val id_raw: mut ref void = none
+            match json.obj_get(root, "id") {
+                some v => { id_raw = v }
+                none   => {}
+            }
+
+            val params: mut ref void = none
+            match json.obj_get(root, "params") {
+                some p => { params = p }
+                none   => {}
+            }
+
+            val mlen: i64 = str.len_raw(method)
+
+            if mlen == 10 && starts_with_h(method, mlen, "initialize", 10) {
+                handle_initialize(id_raw)
+            } elif mlen == 18 && starts_with_h(method, mlen, "textDocument/hover", 18) {
+                handle_hover(doc_store, sym_store, id_raw, params)
+            } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/definition", 23) {
+                handle_definition(doc_store, sym_store, id_raw, params)
+            } elif mlen == 27 && starts_with_h(method, mlen, "textDocument/documentSymbol", 27) {
+                handle_document_symbol(doc_store, sym_store, id_raw, params)
+            } elif mlen == 26 && starts_with_h(method, mlen, "textDocument/signatureHelp", 26) {
+                handle_signature_help(doc_store, sym_store, id_raw, params)
+            } elif mlen == 20 && starts_with_h(method, mlen, "textDocument/didOpen", 20) {
+                handle_did_open(doc_store, sym_store, params)
+            } elif mlen == 22 && starts_with_h(method, mlen, "textDocument/didChange", 22) {
+                handle_did_change(doc_store, sym_store, params)
+            } elif mlen == 8 && starts_with_h(method, mlen, "shutdown", 8) {
+                send_null_result(id_raw)
+            }
+
+            json.doc_free(doc)
+        }
+    }
+}

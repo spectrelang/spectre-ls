@@ -1,0 +1,109 @@
+val str      = use("std/string")
+val coll     = use("std/collections")
+val stdio    = use("std/stdio")
+val handlers = use("./handlers")
+
+extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
+extern (C) fn strlen(s: ref u8) i64 = "strlen"
+extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
+
+val g_doc_store: mut ref void = none
+val g_sym_store: mut ref void = none
+
+fn atoi_raw(s: ref u8) i64 = trust {
+    val v: mut i64 = 0
+    val i: mut i64 = 0
+    for {
+        if s == none { break }
+        val c: u8 = @load8(@ptradd(s, i))
+        if c < '0' || c > '9' { break }
+        v = v * 10 + (c as i64 - 48)
+        i = i + 1
+    }
+    return v
+}
+
+fn starts_with_main(s: ref u8, slen: i64, prefix: ref u8, plen: i64) bool = trust {
+    if plen > slen || plen <= 0 { return false }
+    return strncmp(s, prefix, plen as usize) == 0
+}
+
+// Read one LSP message from stdin.
+// Returns heap-allocated null-terminated JSON body, or none on EOF/error.
+fn read_message() option[ref u8] = trust {
+    val line_buf: ref u8 = @alloc(4096) as ref u8
+    if line_buf == none { return none }
+    val content_length: mut i64 = -1
+
+    for {
+        val r: ref u8 = stdio.read_line(line_buf, 4096)
+        if r == none {
+            @free(line_buf as ref void)
+            return none
+        }
+        val llen: i64 = strlen(line_buf)
+        // Blank line (just \r\n or \n) signals end of headers
+        if llen == 0 { break }
+        if llen == 1 && @load8(line_buf as ref void) == '\n' { break }
+        if llen == 2 &&
+           @load8(line_buf             as ref void) == '\r' &&
+           @load8(@ptradd(line_buf, 1) as ref void) == '\n' {
+            break
+        }
+        if starts_with_main(line_buf, llen, "Content-Length: ", 16) {
+            content_length = atoi_raw(@ptradd(line_buf, 16))
+        }
+    }
+
+    @free(line_buf as ref void)
+
+    if content_length <= 0 { return none }
+
+    val body: ref u8 = @alloc(content_length + 1) as ref u8
+    if body == none { return none }
+
+    val bytes_read: mut i64 = 0
+    val remaining: mut i64  = content_length
+    for {
+        if remaining <= 0 { break }
+        val chunk: usize = trust fread(
+            @ptradd(body, bytes_read) as ref void,
+            1 as usize,
+            remaining as usize,
+            @stdin()
+        )
+        if chunk == 0 { break }
+        bytes_read = bytes_read + chunk as i64
+        remaining  = remaining  - chunk as i64
+    }
+
+    @store8(@ptradd(body, bytes_read), 0)
+
+    if bytes_read == 0 {
+        @free(body as ref void)
+        return none
+    }
+
+    return some body
+}
+
+pub fn main() void = trust {
+    g_doc_store = coll.StringMap.new(64 as usize)
+    g_sym_store = coll.StringMap.new(64 as usize)
+
+    if g_doc_store == none || g_sym_store == none {
+        stdio.eputs("spectre-ls: failed to initialize stores")
+        return
+    }
+
+    for {
+        val msg_opt = trust read_message()
+        match msg_opt {
+            none => { break }
+            some msg => {
+                handlers.dispatch(g_doc_store, g_sym_store, msg)
+                @free(msg as ref void)
+            }
+        }
+    }
+}

@@ -1,4 +1,5 @@
-/target
-std
-samples
-*.sx
+SPECTRE_LANGUAGE_REFERENCE.md
+lib/
+std__*
+s-out/
+docs-out/
