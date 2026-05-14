@@ -599,7 +599,7 @@ pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref Ca
         } elif c == ',' && depth == 0 {
             comma_count = comma_count + 1
         }
-        j = j - 1
+        j--
     }
 }
 
