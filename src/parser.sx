@@ -1,5 +1,5 @@
-val str         = use("std/string")
-val coll        = use("std/collections")
+val str  = use("std/string")
+val coll = use("std/collections")
 
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
