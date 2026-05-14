@@ -5,7 +5,6 @@ val json       = use("std/json")
 val fs         = use("std/fs")
 val parser     = use("./parser")
 
-extern (C) fn strlen(s: ref u8) i64 = "strlen"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 extern (C) fn write(fd: i32, buf: ref void, count: usize) i64 = "write"
 
@@ -20,7 +19,7 @@ fn raw_dup_h(s: ref u8, len: i64) ref u8 = trust {
 
 fn raw_dup_cstr_h(s: ref u8) ref u8 = trust {
     if s == none { return none }
-    val len: i64 = strlen(s)
+    val len: i64 = str.len_raw(s)
     if len == 0 { return none }
     return raw_dup_h(s, len)
 }
@@ -61,11 +60,11 @@ fn write_all(fd: i32, buf: ref void, count: usize) bool = trust {
 
 pub fn write_response(body: ref u8) void = trust {
     if body == none { return }
-    val body_len: i64 = strlen(body)
+    val body_len: i64 = str.len_raw(body)
     if body_len < 0 { return }
     val header: ref u8 = @fmt("Content-Length: {d}", {body_len})
     if header == none { return }
-    val hlen: i64 = strlen(header)
+    val hlen: i64 = str.len_raw(header)
     val sep: ref u8 = @alloc(5) as ref u8
     if sep == none {
         @free(header as ref void)
@@ -96,7 +95,7 @@ fn sb_append_int(sb: str.StringBuilder, n: i64) void = trust {
 
 fn sb_escape(sb: str.StringBuilder, s: ref u8) void = trust {
     if s == none { return }
-    val len: i64 = strlen(s)
+    val len: i64 = str.len_raw(s)
     val i: mut i64 = 0
     for {
         if i >= len { break }
@@ -436,7 +435,7 @@ fn append_range(sb: str.StringBuilder, line: i64, cs: i64, ce: i64) void = trust
 
 fn first_line_dup(s: ref u8) ref u8 = trust {
     if s == none { return none }
-    val len: i64 = strlen(s)
+    val len: i64 = str.len_raw(s)
     val i: mut i64 = 0
     for {
         if i >= len { break }
@@ -532,7 +531,7 @@ pub fn handle_hover(
         sb_escape(sb, sym.signature)
         str.StringBuilder.append_cstr(sb, "\\n```")
     }
-    if sym.doc != none && strlen(sym.doc) > 0 {
+    if sym.doc != none && str.len_raw(sym.doc) > 0 {
         str.StringBuilder.append_cstr(sb, "\\n\\n")
         sb_escape(sb, sym.doc)
     }
@@ -671,7 +670,7 @@ pub fn handle_document_symbol(
                         append_range(sb, sym.line, 0, nl + 20)
                         str.StringBuilder.append_cstr(sb, ",\"selectionRange\":")
                         append_range(sb, sym.line, sym.col, sym.col + nl)
-                        if sym.doc != none && strlen(sym.doc) > 0 {
+                        if sym.doc != none && str.len_raw(sym.doc) > 0 {
                             val dl: ref u8 = first_line_dup(sym.doc)
                             if dl != none {
                                 str.StringBuilder.append_cstr(sb, ",\"detail\":\"")
@@ -749,7 +748,7 @@ pub fn handle_signature_help(
     sb_escape(sb, sig_label)
     str.StringBuilder.append_cstr(sb, "\"")
 
-    if sym.doc != none && strlen(sym.doc) > 0 {
+    if sym.doc != none && str.len_raw(sym.doc) > 0 {
         str.StringBuilder.append_cstr(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
         sb_escape(sb, sym.doc)
         str.StringBuilder.append_cstr(sb, "\"}")
