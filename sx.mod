@@ -7,5 +7,6 @@ build release {
 }
 
 build dev {
+    flags "--alt"
     output "./spectre-ls-dev"
 }

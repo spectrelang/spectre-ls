@@ -1,4 +1,3 @@
-val str      = use("std/string")
 val coll     = use("std/collections")
 val stdio    = use("std/stdio")
 val handlers = use("./handlers")
@@ -28,8 +27,6 @@ fn starts_with_main(s: ref u8, slen: i64, prefix: ref u8, plen: i64) bool = trus
     return strncmp(s, prefix, plen as usize) == 0
 }
 
-// Read one LSP message from stdin.
-// Returns heap-allocated null-terminated JSON body, or none on EOF/error.
 fn read_message() option[ref u8] = trust {
     val line_buf: ref u8 = @alloc(4096) as ref u8
     if line_buf == none { return none }
@@ -42,7 +39,6 @@ fn read_message() option[ref u8] = trust {
             return none
         }
         val llen: i64 = strlen(line_buf)
-        // Blank line (just \r\n or \n) signals end of headers
         if llen == 0 { break }
         if llen == 1 && @load8(line_buf as ref void) == '\n' { break }
         if llen == 2 &&
@@ -66,7 +62,7 @@ fn read_message() option[ref u8] = trust {
     val remaining: mut i64  = content_length
     for {
         if remaining <= 0 { break }
-        val chunk: usize = trust fread(
+        val chunk: usize = fread(
             @ptradd(body, bytes_read) as ref void,
             1 as usize,
             remaining as usize,
@@ -97,7 +93,7 @@ pub fn main() void = trust {
     }
 
     for {
-        val msg_opt = trust read_message()
+        val msg_opt = read_message()
         match msg_opt {
             none => { break }
             some msg => {
