@@ -1,8 +1,8 @@
 val coll       = use("std/collections")
 val stdio      = use("std/stdio")
-val handlers   = use("./handlers")
 val str        = use("std/string")
 val allocators = use("std/allocators")
+val handlers   = use("./handlers")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
