@@ -18,7 +18,7 @@ fn atoi_raw(s: ref u8) i64 = trust {
         val c: u8 = @load8(@ptradd(s, i))
         if c < '0' || c > '9' { break }
         v = v * 10 + (c as i64 - 48)
-        i = i + 1
+        i++
     }
     return v
 }
