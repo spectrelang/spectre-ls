@@ -3,3 +3,5 @@ lib/
 std__*
 s-out/
 docs-out/
+*.dSYM
+spectre-ls-dev
