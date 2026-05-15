@@ -85,7 +85,7 @@ fn read_message() option[ref u8] = trust {
 }
 
 pub fn main() void = trust {
-    val ac: allocators.HeapAllocator = allocators.HeapAllocator.new(10240 as usize)?
+    val ac: allocators.HeapAllocator = @zeroed
     g_doc_store = coll.StringMap.new[?](ac, 64 as usize)
     g_sym_store = coll.StringMap.new[?](ac, 64 as usize)
 

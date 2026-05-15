@@ -1,5 +1,6 @@
-val str  = use("std/string")
-val coll = use("std/collections")
+val str        = use("std/string")
+val coll       = use("std/collections")
+val allocators = use("std/allocators")
 
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
@@ -37,7 +38,7 @@ pub fn sym_alloc() ref Symbol = trust {
     return s as ref Symbol
 }
 
-pub fn sym_free(s: mut ref Symbol) void = trust {
+pub fn sym_free(s: mut ref Symbol, alloc: allocators.HeapAllocator) void = trust {
     if s == none { return }
     if s.name     != none { @free(s.name      as ref void) }
     if s.receiver != none { @free(s.receiver  as ref void) }
@@ -45,7 +46,7 @@ pub fn sym_free(s: mut ref Symbol) void = trust {
     if s.doc      != none { @free(s.doc       as ref void) }
     if s.file     != none { @free(s.file      as ref void) }
     if s.ret_type != none { @free(s.ret_type  as ref void) }
-    if s.params   != none { coll.PtrList.free(s.params) }
+    if s.params   != none { coll.PtrList.free[?](alloc, s.params) }
     @free(s as ref void)
 }
 
@@ -53,18 +54,19 @@ pub fn free_sym_list(list: mut ref void) void = trust {
     if list == none { return }
     val n: usize = coll.PtrList.len(list)
     val i: mut usize = 0
+    val alloc: allocators.HeapAllocator = @zeroed
     for {
         if i >= n { break }
         match coll.PtrList.get(list, i) {
             some v => {
                 val sym: mut ref Symbol = @bitcast(v, ref void) as ref Symbol
-                sym_free(sym)
+                sym_free(sym, alloc)
             }
             none => {}
         }
         i++
     }
-    coll.PtrList.free(list)
+    coll.PtrList.free[?](alloc, list)
 }
 
 fn raw_dup(s: ref u8, len: i64) ref u8 = trust {
@@ -145,7 +147,9 @@ fn trim_right_len(s: ref u8, len: i64) i64 = trust {
 
 fn parse_params(params: ref u8, params_len: i64) ref void = trust {
     val list: mut ref void = none
-    val list_res = coll.PtrList.new(8 as usize)
+    val alloc: allocators.HeapAllocator = @zeroed
+    val list_res = coll.PtrList.new[?](alloc, 8 as usize)
+
     match list_res {
         ok l  => { list = l }
         err _ => { return none }
@@ -188,7 +192,7 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
                 val p: ref u8 = raw_dup(@ptradd(params, s), e - s)
                 if p != none {
                     val pv: usize = @bitcast(p as ref void, usize)
-                    val pr = coll.PtrList.push(list, pv)
+                    val pr = coll.PtrList.push[?](alloc, list, pv)
                     match pr { ok _ => {} err _ => {} }
                 }
             }
@@ -196,7 +200,7 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
         }
 
         if at_end { break }
-        i = i + 1
+        i++
     }
     return list
 }
@@ -233,7 +237,8 @@ fn parse_fn_decl(
 
     val name_len: i64 = ident_len_at(rest, i, rest_len)
     if name_len == 0 {
-        sym_free(sym)
+        val alloc: allocators.HeapAllocator = @zeroed
+        sym_free(sym, alloc)
         return none
     }
     sym.name = raw_dup(@ptradd(rest, i), name_len)
@@ -376,6 +381,7 @@ fn process_line(
     doc_buf: str.String, has_doc: ref i64,
     syms: mut ref void
 ) void = trust {
+    val alloc: allocators.HeapAllocator = @zeroed
     val i: i64 = skip_ws(line, 0, line_len)
     val trimmed: ref u8 = @ptradd(line, i)
     val tlen: i64 = line_len - i
@@ -399,11 +405,10 @@ fn process_line(
     if is_blank_line(line, line_len) { return }
 
     val doc_cstr: ref u8 = str.cstr(doc_buf)
-
     val sym: mut ref Symbol = none
-
     val rest: mut ref u8 = trimmed
     val rlen: mut i64    = tlen
+
     if starts_with_n(trimmed, tlen, "pub ", 4) {
         val off: i64 = skip_ws(trimmed, 4, tlen)
         rest = @ptradd(trimmed, off)
@@ -424,8 +429,8 @@ fn process_line(
 
     if sym != none {
         val sv: usize = @bitcast(sym as ref void, usize)
-        val pr = coll.PtrList.push(syms, sv)
-        match pr { ok _ => {} err _ => { sym_free(sym) } }
+        val pr = coll.PtrList.push[?](alloc, syms, sv)
+        match pr { ok _ => {} err _ => { sym_free(sym, alloc) } }
         str.clear(doc_buf)
         @store(has_doc as ref void, 0 as i64)
     } else {
@@ -436,10 +441,13 @@ fn process_line(
 
 pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     val syms: mut ref void = none
-    match coll.PtrList.new(64 as usize) {
+    val alloc: allocators.HeapAllocator = @zeroed
+    
+    match coll.PtrList.new[?](alloc, 64 as usize) {
         ok l  => { syms = l }
         err _ => { return none }
     }
+
     if content == none { return syms }
 
     val content_len: i64 = str.len_raw(content)
@@ -475,9 +483,10 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
                 pos = pos + 1
             }
         }
-        line_num = line_num + 1
+        line_num++
     }
 
+    
     str.string_free(doc_buf)
     return syms
 }

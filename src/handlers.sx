@@ -342,9 +342,11 @@ fn lookup_parameter_decl(
     return none
 }
 
-fn ensure_parsed(doc_store: mut ref void, sym_store: mut ref void, file_path: ref u8) void = trust {
+fn ensure_parsed(doc_store: ref void, sym_store: mut ref void, file_path: ref u8) void = trust {
     if file_path == none { return }
     val uri: ref u8 = parser.path_to_uri(file_path)
+    val alloc: allocators.HeapAllocator = @zeroed
+    
     if uri == none { return }
     if coll.StringMap.contains(sym_store, uri) {
         @free(uri as ref void)
@@ -354,16 +356,17 @@ fn ensure_parsed(doc_store: mut ref void, sym_store: mut ref void, file_path: re
     if content != none {
         if !coll.StringMap.contains(doc_store, uri) {
             val cv: usize = @bitcast(content as ref void, usize)
-            coll.StringMap.set(doc_store, uri, cv)
+            coll.StringMap.set[?](alloc, doc_store, uri, cv)
         }
         val syms: ref void = parser.parse_file(file_path, content)
         if syms != none {
             val sv: usize = @bitcast(syms, usize)
-            coll.StringMap.set(sym_store, uri, sv)
+            coll.StringMap.set[?](alloc, sym_store, uri, sv)
         } else {
             @free(content as ref void)
         }
     }
+    allocators.HeapAllocator.free(alloc, sym_store)
     @free(uri as ref void)
 }
 
@@ -787,8 +790,8 @@ pub fn handle_signature_help(
 }
 
 pub fn update_document(
-    doc_store: mut ref void,
-    sym_store: mut ref void,
+    doc_store: ref void,
+    sym_store: ref void,
     uri: ref u8,
     text: ref u8
 ) void = trust {
@@ -803,8 +806,11 @@ pub fn update_document(
         }
         none => {}
     }
+
+    val alloc: allocators.HeapAllocator = @zeroed
+    
     val tv: usize = @bitcast(text_copy as ref void, usize)
-    coll.StringMap.set(doc_store, uri, tv)
+    coll.StringMap.set[?](alloc, doc_store, uri, tv)
 
     match coll.StringMap.get(sym_store, uri) {
         some old_v => {
@@ -820,7 +826,7 @@ pub fn update_document(
 
     if syms != none {
         val sv: usize = @bitcast(syms, usize)
-        coll.StringMap.set(sym_store, uri, sv)
+        coll.StringMap.set[?](alloc, sym_store, uri, sv)
     }
 }
 
