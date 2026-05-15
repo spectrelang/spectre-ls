@@ -1,7 +1,8 @@
-val coll     = use("std/collections")
-val stdio    = use("std/stdio")
-val handlers = use("./handlers")
-val str      = use("std/string")
+val coll       = use("std/collections")
+val stdio      = use("std/stdio")
+val handlers   = use("./handlers")
+val str        = use("std/string")
+val allocators = use("std/allocators")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
@@ -84,8 +85,9 @@ fn read_message() option[ref u8] = trust {
 }
 
 pub fn main() void = trust {
-    g_doc_store = coll.StringMap.new(64 as usize)
-    g_sym_store = coll.StringMap.new(64 as usize)
+    val ac: allocators.HeapAllocator = allocators.HeapAllocator.new(10240 as usize)?
+    g_doc_store = coll.StringMap.new[?](ac, 64 as usize)
+    g_sym_store = coll.StringMap.new[?](ac, 64 as usize)
 
     if g_doc_store == none || g_sym_store == none {
         stdio.eputs("spectre-ls: failed to initialize stores")
@@ -102,4 +104,7 @@ pub fn main() void = trust {
             }
         }
     }
+    
+    allocators.HeapAllocator.free(ac, g_doc_store)
+    allocators.HeapAllocator.free(ac, g_sym_store)
 }
