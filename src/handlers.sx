@@ -815,6 +815,20 @@ fn find_matching_close_h(s: ref u8, len: i64, open_idx: i64, open_ch: u8, close_
     return -1
 }
 
+fn contains_substr_h(s: ref u8, needle: ref u8) bool = trust {
+    if s == none || needle == none { return false }
+    val slen: i64 = str.len_raw(s)
+    val nlen: i64 = str.len_raw(needle)
+    if nlen <= 0 || nlen > slen { return false }
+    val i: mut i64 = 0
+    for {
+        if i + nlen > slen { break }
+        if strncmp(@ptradd(s, i), needle, nlen as usize) == 0 { return true }
+        i++
+    }
+    return false
+}
+
 fn estimate_type_symbol_size(
     doc_store: mut ref void,
     sym_store: mut ref void,
@@ -1169,6 +1183,29 @@ fn append_builtin_type_hover_contents(sb: str.StringBuilder, word: ref u8) void 
     str.StringBuilder.append_cstr(sb, " bytes")
 }
 
+fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trust {
+    if doc_store == none || sym == none || sym.file == none || sym.line < 0 { return false }
+    if sym.kind != parser.SYM_FUNCTION && sym.kind != parser.SYM_METHOD { return false }
+    val content: ref u8 = get_content_for_file(doc_store, sym.file)
+    if content == none { return false }
+
+    val ls: mut i64 = -1
+    val le: mut i64 = -1
+    line_bounds_for_line_h(content, sym.line, @addr(ls), @addr(le))
+    if ls < 0 || le <= ls { return false }
+
+    val line_len: i64 = trim_right_len_h(@ptradd(content, ls), le - ls)
+    if line_len <= 0 { return false }
+    val line_text: ref u8 = trim_left_dup_h(@ptradd(content, ls), line_len)
+    if line_text == none { return false }
+    val llen: i64 = str.len_raw(line_text)
+    val unverified: bool = contains_substr_h(line_text, "= trust") ||
+                           contains_substr_h(line_text, " = trust") ||
+                           starts_with_h(line_text, llen, "trust ", 6)
+    @free(line_text as ref void)
+    return unverified
+}
+
 fn sym_kind_to_lsp(kind: i64) i64 = {
     if kind == parser.SYM_FUNCTION { return 12 }
     if kind == parser.SYM_METHOD   { return 6  }
@@ -1354,6 +1391,9 @@ pub fn handle_hover(
             str.StringBuilder.append_cstr(sb, "```spectre\\n")
             sb_escape(sb, sym.signature)
             str.StringBuilder.append_cstr(sb, "\\n```")
+        }
+        if symbol_is_unverified(doc_store, sym) {
+            str.StringBuilder.append_cstr(sb, "\\n\\n(unverified)")
         }
         if sym.doc != none && str.len_raw(sym.doc) > 0 {
             str.StringBuilder.append_cstr(sb, "\\n\\n")
