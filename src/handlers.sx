@@ -425,6 +425,14 @@ fn trim_right_len_h(s: ref u8, len: i64) i64 = trust {
     return n
 }
 
+fn trim_left_dup_h(s: ref u8, len: i64) ref u8 = trust {
+    if s == none || len <= 0 { return none }
+    val start: i64 = skip_ws_h(s, 0, len)
+    val trimmed_len: i64 = trim_right_len_h(@ptradd(s, start), len - start)
+    if trimmed_len <= 0 { return none }
+    return raw_dup_h(@ptradd(s, start), trimmed_len)
+}
+
 fn skip_ws_h(s: ref u8, i: i64, len: i64) i64 = trust {
     val j: mut i64 = i
     for {
@@ -657,7 +665,7 @@ fn lookup_local_variable_decl(
             val start_off: i64 = @load(@ptradd(start_slots as ref u8, best_depth * 8) as ref void) as i64
             val end_off: i64 = @load(@ptradd(end_slots as ref u8, best_depth * 8) as ref void) as i64
             if start_off >= 0 && end_off > start_off {
-                result = raw_dup_h(@ptradd(content, start_off), end_off - start_off)
+                result = trim_left_dup_h(@ptradd(content, start_off), end_off - start_off)
                 @store(out_line as ref void, decl_line)
             }
             break
@@ -721,7 +729,7 @@ fn lookup_global_variable_decl(
 
     if best_start < 0 || best_end <= best_start { return none }
     @store(out_line as ref void, best_line)
-    return raw_dup_h(@ptradd(content, best_start), best_end - best_start)
+    return trim_left_dup_h(@ptradd(content, best_start), best_end - best_start)
 }
 
 fn get_content_for_file(doc_store: ref void, file_path: ref u8) ref u8 = trust {
