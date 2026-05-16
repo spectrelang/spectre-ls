@@ -375,16 +375,71 @@ fn parse_import_decl(
     return sym
 }
 
+fn parse_val_decl(
+    line: ref u8, line_len: i64,
+    line_num: i64, file: ref u8, doc: ref u8,
+    full_line: ref u8, full_line_len: i64
+) ref Symbol = trust {
+    val i: mut i64 = 3
+    i = skip_ws(line, i, line_len)
+    val name_len: i64 = ident_len_at(line, i, line_len)
+    if name_len == 0 { return none }
+
+    val sym: mut ref Symbol = sym_alloc()
+    if sym == none { return none }
+    sym.name = raw_dup(@ptradd(line, i), name_len)
+    sym.kind = SYM_VARIABLE
+    sym.line = line_num
+    sym.col  = 0
+    sym.file = raw_dup_cstr(file)
+    sym.doc  = raw_dup_cstr(doc)
+    i = i + name_len
+
+    i = skip_ws(line, i, line_len)
+    if i < line_len && @load8(@ptradd(line, i)) == ':' {
+        i = i + 1
+        i = skip_ws(line, i, line_len)
+        val type_start: i64 = i
+        val sq_depth: mut i64 = 0
+        val paren_depth: mut i64 = 0
+        for {
+            if i >= line_len { break }
+            val c: u8 = @load8(@ptradd(line, i))
+            if c == '[' { sq_depth = sq_depth + 1 }
+            elif c == ']' { if sq_depth > 0 { sq_depth = sq_depth - 1 } }
+            elif c == '(' { paren_depth = paren_depth + 1 }
+            elif c == ')' { if paren_depth > 0 { paren_depth = paren_depth - 1 } }
+            elif c == '=' && sq_depth == 0 && paren_depth == 0 { break }
+            i++
+        }
+        val type_len: i64 = trim_right_len(@ptradd(line, type_start), i - type_start)
+        if type_len > 0 {
+            sym.ret_type = raw_dup(@ptradd(line, type_start), type_len)
+        }
+    }
+
+    val sig_len: i64 = trim_right_len(full_line, full_line_len)
+    sym.signature = raw_dup(full_line, sig_len)
+    return sym
+}
+
 fn process_line(
     line: ref u8, line_len: i64,
     line_num: i64, file: ref u8,
     doc_buf: str.String, has_doc: ref i64,
+    nesting_depth: i64,
     syms: mut ref void
 ) void = trust {
     val alloc: allocators.HeapAllocator = @zeroed
     val i: i64 = skip_ws(line, 0, line_len)
     val trimmed: ref u8 = @ptradd(line, i)
     val tlen: i64 = line_len - i
+
+    if nesting_depth != 0 {
+        str.clear(doc_buf)
+        @store(has_doc as ref void, 0 as i64)
+        return
+    }
 
     if tlen >= 3 &&
        @load8(@ptradd(trimmed, 0)) == '/' &&
@@ -423,8 +478,11 @@ fn process_line(
         sym = parse_kw_decl(rest, rlen, 5, SYM_ENUM, line_num, file, doc_cstr, line, line_len)
     } elif starts_with_n(rest, rlen, "union ", 6) {
         sym = parse_kw_decl(rest, rlen, 6, SYM_UNION, line_num, file, doc_cstr, line, line_len)
-    } elif starts_with_n(trimmed, tlen, "val ", 4) {
-        sym = parse_import_decl(trimmed, tlen, line_num, file)
+    } elif starts_with_n(rest, rlen, "val ", 4) {
+        sym = parse_import_decl(rest, rlen, line_num, file)
+        if sym == none {
+            sym = parse_val_decl(rest, rlen, line_num, file, doc_cstr, line, line_len)
+        }
     }
 
     if sym != none {
@@ -455,6 +513,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     val line_num: mut i64 = 0
     val doc_buf: mut str.String = str.new()
     val has_doc: mut i64 = 0
+    val nesting_depth: mut i64 = 0
 
     for {
         if pos >= content_len { break }
@@ -471,9 +530,21 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
         process_line(
             @ptradd(content, line_start), line_end - line_start,
             line_num, file_path,
-            doc_buf, @addr(has_doc),
+            doc_buf, @addr(has_doc), nesting_depth,
             syms
         )
+
+        val j: mut i64 = line_start
+        for {
+            if j >= line_end { break }
+            val c: u8 = @load8(@ptradd(content, j))
+            if c == '{' {
+                nesting_depth = nesting_depth + 1
+            } elif c == '}' {
+                if nesting_depth > 0 { nesting_depth = nesting_depth - 1 }
+            }
+            j++
+        }
 
         pos = line_end
         if pos < content_len {
