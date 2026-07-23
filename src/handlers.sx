@@ -1784,6 +1784,10 @@ pub fn dispatch(
                 handle_initialize(id_raw)
             } elif mlen == 18 && starts_with_h(method, mlen, "textDocument/hover", 18) {
                 handle_hover(doc_store, sym_store, id_raw, params)
+            } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/completion", 23) {
+                handle_definition(doc_store, sym_store, id_raw, params)
+                //send_null_result(id_raw)
+                //handle_completion(doc_store, sym_store, id_raw, params)
             } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/definition", 23) {
                 handle_definition(doc_store, sym_store, id_raw, params)
             } elif mlen == 27 && starts_with_h(method, mlen, "textDocument/documentSymbol", 27) {
