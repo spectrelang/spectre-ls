@@ -170,6 +170,12 @@ pub fn handle_initialize(id_raw: ref void) void = trust {
     str.StringBuilder.append_cstr(sb, "\"signatureHelpProvider\":{")
     str.StringBuilder.append_cstr(sb, "\"triggerCharacters\":[\"(\",\",\"]")
     str.StringBuilder.append_cstr(sb, "}},")
+
+    str.StringBuilder.append_cstr(sb, "\"completionProvider\":{")
+    str.StringBuilder.append_cstr(sb, "\"resolveProvider\":false,")
+    str.StringBuilder.append_cstr(sb, "\"triggerCharacters\":[\".\",\":\",\">\"]")
+    str.StringBuilder.append_cstr(sb, "},")
+
     str.StringBuilder.append_cstr(sb, "\"serverInfo\":{\"name\":\"spectre-ls\",\"version\":\"0.1.0\"}")
     str.StringBuilder.append_cstr(sb, "}}")
     val built: mut str.String = str.StringBuilder.build(sb)
@@ -346,7 +352,7 @@ fn ensure_parsed(doc_store: ref void, sym_store: mut ref void, file_path: ref u8
     if file_path == none { return }
     val uri: ref u8 = parser.path_to_uri(file_path)
     val alloc: allocators.HeapAllocator = @zeroed
-    
+
     if uri == none { return }
     if coll.StringMap.contains(sym_store, uri) {
         @free(uri as ref void)
@@ -356,12 +362,14 @@ fn ensure_parsed(doc_store: ref void, sym_store: mut ref void, file_path: ref u8
     if content != none {
         if !coll.StringMap.contains(doc_store, uri) {
             val cv: usize = @bitcast(content as ref void, usize)
-            coll.StringMap.set[?](alloc, doc_store, uri, cv)
+            //coll.StringMap.set[?](alloc, doc_store, uri, cv)
+            coll.StringMap.set[allocators.HeapAllocator](alloc, doc_store, uri, cv)
         }
         val syms: ref void = parser.parse_file(file_path, content)
         if syms != none {
             val sv: usize = @bitcast(syms, usize)
-            coll.StringMap.set[?](alloc, sym_store, uri, sv)
+            //coll.StringMap.set[?](alloc, sym_store, uri, sv)
+            coll.StringMap.set[allocators.HeapAllocator](alloc, sym_store, uri, sv)
         } else {
             @free(content as ref void)
         }
@@ -1671,9 +1679,9 @@ pub fn update_document(
     }
 
     val alloc: allocators.HeapAllocator = @zeroed
-    
+
     val tv: usize = @bitcast(text_copy as ref void, usize)
-    coll.StringMap.set[?](alloc, doc_store, uri, tv)
+    coll.StringMap.set[allocators.HeapAllocator](alloc, doc_store, uri, tv)
 
     match coll.StringMap.get(sym_store, uri) {
         some old_v => {
@@ -1689,7 +1697,8 @@ pub fn update_document(
 
     if syms != none {
         val sv: usize = @bitcast(syms, usize)
-        coll.StringMap.set[?](alloc, sym_store, uri, sv)
+        //coll.StringMap.set[?](alloc, sym_store, uri, sv)
+        coll.StringMap.set[allocators.HeapAllocator](alloc, sym_store, uri, sv)
     }
 }
 
@@ -1771,6 +1780,8 @@ pub fn dispatch(
                 handle_initialize(id_raw)
             } elif mlen == 18 && starts_with_h(method, mlen, "textDocument/hover", 18) {
                 handle_hover(doc_store, sym_store, id_raw, params)
+            } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/completion", 23) {
+                handle_completion(id_raw)
             } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/definition", 23) {
                 handle_definition(doc_store, sym_store, id_raw, params)
             } elif mlen == 27 && starts_with_h(method, mlen, "textDocument/documentSymbol", 27) {
@@ -1788,4 +1799,21 @@ pub fn dispatch(
             json.doc_free(doc)
         }
     }
+}
+
+pub fn handle_completion(
+    //doc_store: mut ref void,
+    //sym_store: mut ref void,
+    id_raw: ref void,
+    //params: ref void
+) void = trust {
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{")
+    str.StringBuilder.append_cstr(sb, "\"items\":[]")
+    str.StringBuilder.append_cstr(sb, "}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
 }

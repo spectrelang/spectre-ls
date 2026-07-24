@@ -46,7 +46,8 @@ pub fn sym_free(s: mut ref Symbol, alloc: allocators.HeapAllocator) void = trust
     if s.doc      != none { @free(s.doc       as ref void) }
     if s.file     != none { @free(s.file      as ref void) }
     if s.ret_type != none { @free(s.ret_type  as ref void) }
-    if s.params   != none { coll.PtrList.free[?](alloc, s.params) }
+    //if s.params   != none { coll.PtrList.free[?](alloc, s.params) }
+    if s.params   != none { coll.PtrList.free[allocators.HeapAllocator](alloc, s.params) }
     @free(s as ref void)
 }
 
@@ -66,7 +67,8 @@ pub fn free_sym_list(list: mut ref void) void = trust {
         }
         i++
     }
-    coll.PtrList.free[?](alloc, list)
+    //coll.PtrList.free[?](alloc, list)
+    coll.PtrList.free[allocators.HeapAllocator](alloc, list)
 }
 
 fn raw_dup(s: ref u8, len: i64) ref u8 = trust {
@@ -148,7 +150,8 @@ fn trim_right_len(s: ref u8, len: i64) i64 = trust {
 fn parse_params(params: ref u8, params_len: i64) ref void = trust {
     val list: mut ref void = none
     val alloc: allocators.HeapAllocator = @zeroed
-    val list_res = coll.PtrList.new[?](alloc, 8 as usize)
+    //val list_res = coll.PtrList.new[?](alloc, 8 as usize)
+    val list_res = coll.PtrList.new[allocators.HeapAllocator](alloc, 8 as usize)
 
     match list_res {
         ok l  => { list = l }
@@ -192,7 +195,8 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
                 val p: ref u8 = raw_dup(@ptradd(params, s), e - s)
                 if p != none {
                     val pv: usize = @bitcast(p as ref void, usize)
-                    val pr = coll.PtrList.push[?](alloc, list, pv)
+                    //val pr = coll.PtrList.push[?](alloc, list, pv)
+                    val pr = coll.PtrList.push[allocators.HeapAllocator](alloc, list, pv)
                     match pr { ok _ => {} err _ => {} }
                 }
             }
@@ -487,7 +491,8 @@ fn process_line(
 
     if sym != none {
         val sv: usize = @bitcast(sym as ref void, usize)
-        val pr = coll.PtrList.push[?](alloc, syms, sv)
+        //val pr = coll.PtrList.push[?](alloc, syms, sv)
+        val pr = coll.PtrList.push[allocators.HeapAllocator](alloc, syms, sv)
         match pr { ok _ => {} err _ => { sym_free(sym, alloc) } }
         str.clear(doc_buf)
         @store(has_doc as ref void, 0 as i64)
@@ -501,7 +506,8 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     val syms: mut ref void = none
     val alloc: allocators.HeapAllocator = @zeroed
     
-    match coll.PtrList.new[?](alloc, 64 as usize) {
+    //match coll.PtrList.new[?](alloc, 64 as usize) {
+    match coll.PtrList.new[allocators.HeapAllocator](alloc, 64 as usize) {
         ok l  => { syms = l }
         err _ => { return none }
     }
