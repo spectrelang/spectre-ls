@@ -325,14 +325,14 @@ test {
             trust json.doc_free(d)
         }
         none => {
-            assert(false)
+            assert false
         }
     }
 }
 
 test {
-    assert(is_help_flag("-h"))
-    assert(is_help_flag("--help"))
-    assert(!is_help_flag("--version"))
-    assert(!is_help_flag(""))
+    assert is_help_flag("-h")
+    assert is_help_flag("--help")
+    assert !is_help_flag("--version")
+    assert !is_help_flag("")
 }
