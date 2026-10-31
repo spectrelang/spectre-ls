@@ -188,6 +188,53 @@ pub fn send_error(id_raw: ref void, code: i64, msg: ref u8) void = trust {
     str.StringBuilder.free(sb)
 }
 
+fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
+    if uri == none || content == none {
+        return
+    }
+
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    str.StringBuilder.append_cstr(sb, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"")
+    sb_escape(sb, uri)
+    str.StringBuilder.append_cstr(sb, "\",\"diagnostics\":[")
+
+    val vars: ref void = parser.find_unused_variables(content)
+    if vars != none {
+        val n: usize = coll.PtrList.len(vars)
+        val i: mut usize = 0
+        val first: mut i64 = 1
+        for {
+            if i >= n {
+                break
+            }
+            if coll.PtrList.get(vars, i) is some v {
+                val u: ref parser.UnusedVariable = @bitcast(v, ref void) as ref parser.UnusedVariable
+                if u != none && u.name != none {
+                    if first == 1 {
+                        first = 0
+                    } else {
+                        str.StringBuilder.append_cstr(sb, ",")
+                    }
+                    val nlen: i64 = str.len_raw(u.name)
+                    str.StringBuilder.append_cstr(sb, "{\"range\":")
+                    append_range(sb, u.line, u.col, u.col + nlen)
+                    str.StringBuilder.append_cstr(sb, ",\"severity\":2,\"source\":\"spectre-ls\",\"code\":\"unused-variable\",\"message\":\"variable '")
+                    sb_escape(sb, u.name)
+                    str.StringBuilder.append_cstr(sb, "' declared but never used\"}")
+                }
+            }
+            i++
+        }
+        parser.free_unused_variables(vars)
+    }
+
+    str.StringBuilder.append_cstr(sb, "]}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
 pub fn handle_initialize(id_raw: ref void) void = trust {
     val sb: str.StringBuilder = str.StringBuilder.new()
     make_base(sb, id_raw)
@@ -4019,6 +4066,199 @@ pub fn handle_document_symbol(
     str.StringBuilder.free(sb)
 }
 
+fn find_method_for_type(
+    sym_list: ref void,
+    type_name: ref u8,
+    name: ref u8
+) ref parser.Symbol = trust {
+    if sym_list == none || type_name == none || name == none {
+        return none
+    }
+    val n: usize = coll.PtrList.len(sym_list)
+    val i: mut usize = 0
+    for {
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(sym_list, i) is some v {
+            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            if sym != none && sym.kind == parser.SYM_METHOD && sym.name != none &&
+            str.raw_cmp(sym.name, name) == 0 &&
+            method_receiver_matches(sym.receiver, type_name) {
+                return sym
+            }
+        }
+        i++
+    }
+    return none
+}
+
+fn resolve_signature_symbol(
+    doc_store: mut ref void,
+    sym_store: mut ref void,
+    current_uri: ref u8,
+    current_file: ref u8,
+    content: ref u8,
+    line: i64,
+    name: ref u8,
+    qualifier: ref u8
+) ref parser.Symbol = trust {
+    if name == none {
+        return none
+    }
+    if qualifier == none {
+        return lookup_symbol(doc_store, sym_store, current_uri, current_file, name, none)
+    }
+
+    // Module aliases and plain type names.
+    val direct: ref parser.Symbol = lookup_symbol(
+        doc_store, sym_store, current_uri, current_file, name, qualifier
+    )
+    if direct != none {
+        return direct
+    }
+
+    val type_sym: mut ref parser.Symbol = resolve_type_symbol(
+        doc_store, sym_store, current_uri, current_file, qualifier, 0
+    )
+    if type_sym == none {
+        type_sym = resolve_chain_type_symbol(
+            doc_store, sym_store, current_uri, current_file, content, line, 0, qualifier, 0
+        )
+    }
+    if type_sym == none {
+        return none
+    }
+    val type_syms: ref void = sym_list_for_file(sym_store, doc_store, type_sym.file)
+    return find_method_for_type(type_syms, type_sym.name, name)
+}
+
+fn append_signature_params_from_label(sb: str.StringBuilder, label: ref u8) void = trust {
+    if label == none {
+        return
+    }
+    val len: i64 = str.len_raw(label)
+    val open: mut i64 = -1
+    val i: mut i64 = 0
+    for {
+        if i >= len {
+            break
+        }
+        if @load8(@ptradd(label, i)) == '(' {
+            open = i
+            break
+        }
+        i++
+    }
+    if open < 0 {
+        return
+    }
+
+    val close: mut i64 = -1
+    val depth: mut i64 = 1
+    i = open + 1
+    for {
+        if i >= len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(label, i))
+        if c == '(' {
+            depth = depth + 1
+        } elif c == ')' {
+            depth = depth - 1
+            if depth == 0 {
+                close = i
+                break
+            }
+        }
+        i++
+    }
+    if close < 0 {
+        return
+    }
+
+    val start: mut i64 = open + 1
+    val nested: mut i64 = 0
+    val first: mut i64 = 1
+    i = start
+    for {
+        val at_end: bool = i >= close
+        val emit: mut i64 = 0
+        if at_end {
+            if i > start {
+                emit = 1
+            }
+        } else {
+            val c: u8 = @load8(@ptradd(label, i))
+            if c == '(' || c == '[' || c == '{' {
+                nested = nested + 1
+            } elif c == ')' || c == ']' || c == '}' {
+                if nested > 0 {
+                    nested = nested - 1
+                }
+            } elif c == ',' && nested == 0 {
+                emit = 1
+            }
+        }
+
+        if emit == 1 {
+            val s: i64 = skip_ws_h(label, start, i)
+            val plen: i64 = trim_right_len_h(@ptradd(label, s), i - s)
+            if plen > 0 {
+                if first == 1 {
+                    first = 0
+                } else {
+                    str.StringBuilder.append_cstr(sb, ",")
+                }
+                val part: ref u8 = raw_dup_h(@ptradd(label, s), plen)
+                if part != none {
+                    str.StringBuilder.append_cstr(sb, "{\"label\":\"")
+                    sb_escape(sb, part)
+                    str.StringBuilder.append_cstr(sb, "\"}")
+                    @free(part as ref void)
+                }
+            }
+            start = i + 1
+        }
+
+        if at_end {
+            break
+        }
+        i++
+    }
+}
+
+fn send_intrinsic_signature_help(id_raw: ref void, name: ref u8, active_param: i64) void = trust {
+    val sig: ref u8 = intrinsic_signature(name)
+    if sig == none {
+        send_null_result(id_raw)
+        return
+    }
+
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"signatures\":[{\"label\":\"")
+    sb_escape(sb, sig)
+    str.StringBuilder.append_cstr(sb, "\"")
+
+    val doc: ref u8 = intrinsic_description(name)
+    if doc != none && str.len_raw(doc) > 0 {
+        str.StringBuilder.append_cstr(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
+        sb_escape(sb, doc)
+        str.StringBuilder.append_cstr(sb, "\"}")
+    }
+
+    str.StringBuilder.append_cstr(sb, ",\"parameters\":[")
+    append_signature_params_from_label(sb, sig)
+    str.StringBuilder.append_cstr(sb, "]}],\"activeSignature\":0,\"activeParameter\":")
+    sb_append_int(sb, active_param)
+    str.StringBuilder.append_cstr(sb, "}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
 pub fn handle_signature_help(
     doc_store: mut ref void,
     sym_store: mut ref void,
@@ -4048,29 +4288,48 @@ pub fn handle_signature_help(
         send_null_result(id_raw) return
     }
 
-    val ctx_mem: ref void = @alloc(16)
+    val ctx_mem: ref void = @alloc(@sizeof(parser.CallContext))
     if ctx_mem == none {
         send_null_result(id_raw) return
     }
-    @memset(ctx_mem, 0, 16)
+    @memset(ctx_mem, 0, @sizeof(parser.CallContext) as usize)
     val ctx: mut ref parser.CallContext = ctx_mem as ref parser.CallContext
     parser.find_active_call(content, line, col, ctx)
 
-    if ctx.fn_name == none {
-        @free(ctx_mem)
+    val fn_name: mut ref u8 = ctx.fn_name
+    val qualifier: mut ref u8 = ctx.qualifier
+    val active_param: i64 = ctx.param_idx
+    val is_intrinsic: i64 = ctx.is_intrinsic
+    @free(ctx_mem)
+
+    if fn_name == none {
+        if qualifier != none {
+            @free(qualifier as ref void)
+        }
         send_null_result(id_raw)
         return
     }
 
+    if is_intrinsic == 1 && is_intrinsic_word(fn_name) {
+        send_intrinsic_signature_help(id_raw, fn_name, active_param)
+        @free(fn_name as ref void)
+        if qualifier != none {
+            @free(qualifier as ref void)
+        }
+        return
+    }
+
     val file_path: ref u8 = parser.uri_to_path(uri)
-    val sym: ref parser.Symbol = lookup_symbol(
-        doc_store, sym_store, uri, file_path, ctx.fn_name, none
+    val sym: ref parser.Symbol = resolve_signature_symbol(
+        doc_store, sym_store, uri, file_path, content, line, fn_name, qualifier
     )
+    @free(fn_name as ref void)
+    if qualifier != none {
+        @free(qualifier as ref void)
+    }
     if file_path != none {
         @free(file_path as ref void)
     }
-    val active_param: i64 = ctx.param_idx
-    @free(ctx_mem)
 
     if sym == none {
         send_null_result(id_raw) return
@@ -4172,6 +4431,8 @@ pub fn update_document(
         val sv: usize = @bitcast(syms, usize)
         coll.StringMap.set[_](alloc, sym_store, uri, sv)
     }
+
+    send_diagnostics(uri, text_copy)
 }
 
 pub fn handle_did_open(

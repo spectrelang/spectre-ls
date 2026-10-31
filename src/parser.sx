@@ -30,6 +30,39 @@ pub type Symbol = {
 pub type CallContext = {
     fn_name: mut ref u8
     param_idx: mut i64
+    qualifier: mut ref u8
+    is_intrinsic: mut i64
+}
+
+pub type UnusedVariable = {
+    name: mut ref u8
+    line: mut i64
+    col: mut i64
+}
+
+val TOK_IDENT: i64 = 0
+val TOK_PUNCT: i64 = 1
+
+type ScanToken = {
+    start: mut i64
+    len: mut i64
+    line: mut i64
+    col: mut i64
+    depth: mut i64
+    owner: mut i64
+    kind: mut i64
+    is_decl: mut i64
+    ch: mut u8
+}
+
+type VarCandidate = {
+    name: mut ref u8
+    line: mut i64
+    col: mut i64
+    token_index: mut i64
+    depth: mut i64
+    owner: mut i64
+    is_public: mut i64
 }
 
 pub fn sym_alloc() ref Symbol = trust {
@@ -190,7 +223,7 @@ fn trim_right_len(s: ref u8, len: i64) i64 = trust {
         if c != ' ' && c != '\t' && c != '\r' {
             break
         }
-        n = n - 1
+        n--
     }
     return n
 }
@@ -1218,6 +1251,12 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
 pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref CallContext) void = trust {
     result.fn_name = none
     result.param_idx = 0
+    result.qualifier = none
+    result.is_intrinsic = 0
+
+    if content == none || line < 0 || col < 0 {
+        return
+    }
 
     val content_len: i64 = str.len_raw(content)
     if content_len == 0 {
@@ -1243,53 +1282,159 @@ pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref Ca
         cursor_pos = content_len
     }
 
-    val depth: mut i64 = 0
-    val comma_count: mut i64 = 0
-    val j: mut i64 = cursor_pos - 1
+    val tokens: ref void = scan_tokens(content)
+    if tokens == none {
+        return
+    }
+    val n: usize = coll.PtrList.len(tokens)
 
+    // Track the stack of currently-open parentheses.  The top of the stack at
+    // the cursor is the call we are completing.
+    val max_nesting: i64 = 4096
+    val stack: ref void = @alloc((max_nesting as usize) * 8)
+    if stack == none {
+        free_scan_tokens(tokens)
+        return
+    }
+    @memset(stack, 0, (max_nesting as usize) * 8)
+    val sp: mut i64 = 0
+    val ti: mut usize = 0
+    for {
+        if ti >= n {
+            break
+        }
+        val t: ref ScanToken = scan_token_at(tokens, ti)
+        if t == none {
+            ti++
+            continue
+        }
+        if t.start >= cursor_pos {
+            break
+        }
+        if t.kind == TOK_PUNCT {
+            if t.ch == '(' {
+                if sp < max_nesting {
+                    @store(@ptradd(stack as ref u8, sp * 8) as ref void, ti as i64)
+                    sp = sp + 1
+                }
+            } elif t.ch == ')' {
+                if sp > 0 {
+                    sp = sp - 1
+                }
+            }
+        }
+        ti++
+    }
+    if sp <= 0 {
+        @free(stack)
+        free_scan_tokens(tokens)
+        return
+    }
+    val open_idx: usize = @load(@ptradd(stack as ref u8, (sp - 1) * 8) as ref void) as i64 as usize
+
+    if open_idx == 0 {
+        @free(stack)
+        free_scan_tokens(tokens)
+        return
+    }
+    val first: ref ScanToken = scan_token_at(tokens, open_idx - 1)
+    if first == none || first.kind != TOK_IDENT {
+        @free(stack)
+        free_scan_tokens(tokens)
+        return
+    }
+
+    val name_start: i64 = first.start
+    val name_len: i64 = first.len
+    val chain_start: mut i64 = first.start
+    val last_dot: mut i64 = -1
+    val j: mut i64 = open_idx as i64 - 2
     for {
         if j < 0 {
             break
         }
-        val c: u8 = @load8(@ptradd(content, j))
-        if c == ')' {
-            depth = depth + 1
-        } elif c == '(' {
-            if depth == 0 {
-                val k: mut i64 = j - 1
-                for {
-                    if k < 0 {
-                        break
-                    }
-                    val wc: u8 = @load8(@ptradd(content, k))
-                    if wc != ' ' && wc != '\t' {
-                        break
-                    }
-                    k = k - 1
-                }
-                val ie: i64 = k + 1
-                for {
-                    if k < 0 {
-                        break
-                    }
-                    if !is_ident_cont(@load8(@ptradd(content, k))) {
-                        break
-                    }
-                    k = k - 1
-                }
-                val is_: i64 = k + 1
-                if ie > is_ {
-                    result.fn_name = raw_dup(@ptradd(content, is_), ie - is_)
-                    result.param_idx = comma_count
-                }
-                return
-            }
-            depth = depth - 1
-        } elif c == ',' && depth == 0 {
-            comma_count = comma_count + 1
+        if j < 1 {
+            break
         }
-        j--
+        val dt: ref ScanToken = scan_token_at(tokens, j as usize)
+        if dt == none || dt.kind != TOK_PUNCT || dt.ch != '.' {
+            break
+        }
+        val pt: ref ScanToken = scan_token_at(tokens, (j - 1) as usize)
+        if pt == none || pt.kind != TOK_IDENT {
+            break
+        }
+        if last_dot < 0 {
+            last_dot = dt.start
+        }
+        chain_start = pt.start
+        j = j - 2
     }
+
+    if last_dot > chain_start {
+        val qs: i64 = skip_ws(content, chain_start, last_dot)
+        val qlen: i64 = trim_right_len(@ptradd(content, qs), last_dot - qs)
+        if qlen > 0 {
+            result.qualifier = raw_dup(@ptradd(content, qs), qlen)
+        }
+    }
+
+    val before: mut ref ScanToken = none
+    if j >= 0 {
+        before = scan_token_at(tokens, j as usize)
+    }
+    if before != none && before.kind == TOK_PUNCT && before.ch == '@' {
+        result.is_intrinsic = 1
+    }
+
+    result.fn_name = raw_dup(@ptradd(content, name_start), name_len)
+
+    val comma_count: mut i64 = 0
+    val paren_depth: mut i64 = 0
+    val square_depth: mut i64 = 0
+    val brace_depth: mut i64 = 0
+    val ci: mut usize = open_idx + 1
+    for {
+        if ci >= n {
+            break
+        }
+        val t: ref ScanToken = scan_token_at(tokens, ci)
+        if t == none {
+            ci++
+            continue
+        }
+        if t.start >= cursor_pos {
+            break
+        }
+        if t.kind == TOK_PUNCT {
+            if t.ch == '(' {
+                paren_depth = paren_depth + 1
+            } elif t.ch == ')' {
+                if paren_depth > 0 {
+                    paren_depth = paren_depth - 1
+                }
+            } elif t.ch == '[' {
+                square_depth = square_depth + 1
+            } elif t.ch == ']' {
+                if square_depth > 0 {
+                    square_depth = square_depth - 1
+                }
+            } elif t.ch == '{' {
+                brace_depth = brace_depth + 1
+            } elif t.ch == '}' {
+                if brace_depth > 0 {
+                    brace_depth = brace_depth - 1
+                }
+            } elif t.ch == ',' && paren_depth == 0 && square_depth == 0 && brace_depth == 0 {
+                comma_count = comma_count + 1
+            }
+        }
+        ci++
+    }
+    result.param_idx = comma_count
+
+    @free(stack)
+    free_scan_tokens(tokens)
 }
 
 pub fn uri_to_path(uri: ref u8) ref u8 = trust {
@@ -1814,6 +1959,767 @@ test {
     assert str.raw_cmp(j1, "/a/b.sx") == 0
 }
 
+fn scan_tok_new(
+    start: i64, tlen: i64, line: i64, col: i64,
+    depth: i64, owner: i64, kind: i64, ch: u8
+) ref ScanToken = trust {
+    val mem: ref void = @alloc(@sizeof(ScanToken))
+    if mem == none {
+        return none
+    }
+    @memset(mem, 0, @sizeof(ScanToken) as usize)
+    val t: mut ref ScanToken = mem as ref ScanToken
+    t.start = start
+    t.len = tlen
+    t.line = line
+    t.col = col
+    t.depth = depth
+    t.owner = owner
+    t.kind = kind
+    t.ch = ch
+    return t
+}
+
+fn scan_token_push(tokens: mut ref void, t: ref ScanToken) void = trust {
+    if tokens == none || t == none {
+        return
+    }
+    val alloc: allocators.HeapAllocator = @zeroed
+    val tv: usize = @bitcast(t as ref void, usize)
+    match coll.PtrList.push[_](alloc, tokens, tv) {
+        ok _ => {}
+        err _ => {
+            @free(t as ref void)
+        }
+    }
+}
+
+fn scan_tokens(content: ref u8) ref void = trust {
+    val alloc: allocators.HeapAllocator = @zeroed
+    val tokens: mut ref void = none
+    match coll.PtrList.new[_](alloc, 128 as usize) {
+        ok l => {
+            tokens = l
+        }
+        err _ => {
+            return none
+        }
+    }
+    if content == none {
+        return tokens
+    }
+
+    val len: i64 = str.len_raw(content)
+    val max_depth: i64 = 4096
+    val owner_stack: ref void = @alloc((max_depth as usize) * 8)
+    if owner_stack == none {
+        coll.PtrList.free[_](alloc, tokens)
+        return none
+    }
+    @memset(owner_stack, 0, (max_depth as usize) * 8)
+
+    val i: mut i64 = 0
+    val line: mut i64 = 0
+    val col: mut i64 = 0
+    val depth: mut i64 = 0
+    val current_owner: mut i64 = 0
+    val next_owner: mut i64 = 0
+    val pending_callable: mut i64 = 0
+    val pending_line: mut i64 = -1
+
+    for {
+        if i >= len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(content, i))
+
+        if c == ' ' || c == '\t' || c == '\r' {
+            i++
+            col = col + 1
+            continue
+        }
+        if c == '\n' {
+            i++
+            line = line + 1
+            col = 0
+            if pending_callable == 1 && pending_line != line {
+                pending_callable = 0
+            }
+            continue
+        }
+
+        // Line comments.
+        if c == '/' && i + 1 < len && @load8(@ptradd(content, i + 1)) == '/' {
+            for {
+                if i >= len {
+                    break
+                }
+                if @load8(@ptradd(content, i)) == '\n' {
+                    break
+                }
+                i++
+                col = col + 1
+            }
+            continue
+        }
+
+        // Raw strings start with `\\` and may continue on following lines that
+        // also start with `\\`.
+        if c == '\\' && i + 1 < len && @load8(@ptradd(content, i + 1)) == '\\' {
+            i = i + 2
+            col = col + 2
+            for {
+                if i >= len {
+                    break
+                }
+                if @load8(@ptradd(content, i)) == '\n' {
+                    break
+                }
+                i++
+                col = col + 1
+            }
+            if i < len && @load8(@ptradd(content, i)) == '\n' {
+                i++
+                line = line + 1
+                col = 0
+            }
+            for {
+                val save_i: i64 = i
+                val save_col: i64 = col
+                for {
+                    if i >= len {
+                        break
+                    }
+                    val ic: u8 = @load8(@ptradd(content, i))
+                    if ic != ' ' && ic != '\t' {
+                        break
+                    }
+                    i++
+                    col = col + 1
+                }
+                if i + 1 < len &&
+                @load8(@ptradd(content, i)) == '\\' &&
+                @load8(@ptradd(content, i + 1)) == '\\' {
+                    i = i + 2
+                    col = col + 2
+                    for {
+                        if i >= len {
+                            break
+                        }
+                        if @load8(@ptradd(content, i)) == '\n' {
+                            break
+                        }
+                        i++
+                        col = col + 1
+                    }
+                    if i < len && @load8(@ptradd(content, i)) == '\n' {
+                        i++
+                        line = line + 1
+                        col = 0
+                    }
+                } else {
+                    i = save_i
+                    col = save_col
+                    break
+                }
+            }
+            continue
+        }
+
+        // String literals.
+        if c == '"' {
+            i++
+            col = col + 1
+            for {
+                if i >= len {
+                    break
+                }
+                val sc: u8 = @load8(@ptradd(content, i))
+                if sc == '\\' && i + 1 < len {
+                    i = i + 2
+                    col = col + 2
+                    continue
+                }
+                if sc == '"' {
+                    i++
+                    col = col + 1
+                    break
+                }
+                if sc == '\n' {
+                    i++
+                    line = line + 1
+                    col = 0
+                    continue
+                }
+                i++
+                col = col + 1
+            }
+            continue
+        }
+
+        // Character literals.
+        if c == '\'' {
+            i++
+            col = col + 1
+            for {
+                if i >= len {
+                    break
+                }
+                val cc: u8 = @load8(@ptradd(content, i))
+                if cc == '\\' && i + 1 < len {
+                    i = i + 2
+                    col = col + 2
+                    continue
+                }
+                if cc == '\'' {
+                    i++
+                    col = col + 1
+                    break
+                }
+                if cc == '\n' {
+                    i++
+                    line = line + 1
+                    col = 0
+                    break
+                }
+                i++
+                col = col + 1
+            }
+            continue
+        }
+
+        if is_ident_start(c) {
+            val start: i64 = i
+            val start_col: i64 = col
+            for {
+                if i >= len {
+                    break
+                }
+                if !is_ident_cont(@load8(@ptradd(content, i))) {
+                    break
+                }
+                i++
+                col = col + 1
+            }
+            val tlen: i64 = i - start
+            val t: ref ScanToken = scan_tok_new(start, tlen, line, start_col, depth, current_owner, TOK_IDENT, 0 as u8)
+            scan_token_push(tokens, t)
+            if tlen == 2 && strncmp(@ptradd(content, start), "fn", 2 as usize) == 0 {
+                pending_callable = 1
+                pending_line = line
+            } elif tlen == 4 && strncmp(@ptradd(content, start), "test", 4 as usize) == 0 {
+                pending_callable = 1
+                pending_line = line
+            }
+            continue
+        }
+
+        if c >= '0' && c <= '9' {
+            for {
+                if i >= len {
+                    break
+                }
+                val nc: u8 = @load8(@ptradd(content, i))
+                if is_ident_cont(nc) || nc == '.' {
+                    i++
+                    col = col + 1
+                } else {
+                    break
+                }
+            }
+            continue
+        }
+
+        if c == '{' {
+            if pending_callable == 1 && pending_line == line {
+                next_owner = next_owner + 1
+                current_owner = next_owner
+                pending_callable = 0
+            }
+            val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
+            scan_token_push(tokens, t)
+            depth = depth + 1
+            if depth < max_depth {
+                @store(@ptradd(owner_stack as ref u8, depth * 8) as ref void, current_owner)
+            }
+            i++
+            col = col + 1
+            continue
+        }
+
+        if c == '}' {
+            val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
+            scan_token_push(tokens, t)
+            if depth > 0 {
+                depth = depth - 1
+                if depth < max_depth {
+                    current_owner = @load(@ptradd(owner_stack as ref u8, depth * 8) as ref void) as i64
+                }
+            }
+            i++
+            col = col + 1
+            continue
+        }
+
+        val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
+        scan_token_push(tokens, t)
+        i++
+        col = col + 1
+    }
+
+    @free(owner_stack)
+    return tokens
+}
+
+fn scan_token_at(tokens: ref void, index: usize) ref ScanToken = trust {
+    if tokens == none {
+        return none
+    }
+    if index >= coll.PtrList.len(tokens) {
+        return none
+    }
+    match coll.PtrList.get(tokens, index) {
+        some v => {
+            return @bitcast(v, ref void) as ref ScanToken
+        }
+        none => {
+            return none
+        }
+    }
+}
+
+fn free_scan_tokens(tokens: ref void) void = trust {
+    if tokens == none {
+        return
+    }
+    val alloc: allocators.HeapAllocator = @zeroed
+    val list: mut ref void = tokens
+    val n: usize = coll.PtrList.len(list)
+    val i: mut usize = 0
+    for {
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(list, i) is some v {
+            @free(@bitcast(v, ref void))
+        }
+        i++
+    }
+    coll.PtrList.free[_](alloc, list)
+}
+
+fn scan_tok_is_word(content: ref u8, t: ref ScanToken, word: ref u8, wlen: i64) bool = trust {
+    if content == none || t == none || word == none {
+        return false
+    }
+    if t.kind != TOK_IDENT || t.len != wlen {
+        return false
+    }
+    return strncmp(@ptradd(content, t.start), word, wlen as usize) == 0
+}
+
+fn var_candidate_alloc() ref VarCandidate = trust {
+    val mem: ref void = @alloc(@sizeof(VarCandidate))
+    if mem == none {
+        return none
+    }
+    @memset(mem, 0, @sizeof(VarCandidate) as usize)
+    return mem as ref VarCandidate
+}
+
+fn free_var_candidates(candidates: mut ref void) void = trust {
+    if candidates == none {
+        return
+    }
+    val alloc: allocators.HeapAllocator = @zeroed
+    val n: usize = coll.PtrList.len(candidates)
+    val i: mut usize = 0
+    for {
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(candidates, i) is some v {
+            val c: ref VarCandidate = @bitcast(v, ref void) as ref VarCandidate
+            if c != none {
+                if c.name != none {
+                    @free(c.name as ref void)
+                }
+                @free(c as ref void)
+            }
+        }
+        i++
+    }
+    coll.PtrList.free[_](alloc, candidates)
+}
+
+fn var_candidate_is_import(
+    content: ref u8,
+    tokens: ref void,
+    name_index: usize
+) bool = trust {
+    if content == none || tokens == none {
+        return false
+    }
+    val n: usize = coll.PtrList.len(tokens)
+    val name_tok: ref ScanToken = scan_token_at(tokens, name_index)
+    if name_tok == none {
+        return false
+    }
+
+    val j: mut usize = name_index + 1
+    for {
+        if j >= n {
+            break
+        }
+        val t: ref ScanToken = scan_token_at(tokens, j)
+        if t == none {
+            break
+        }
+        if t.line != name_tok.line {
+            break
+        }
+        if t.kind == TOK_PUNCT && t.ch == '=' && t.depth == name_tok.depth {
+            val u: ref ScanToken = scan_token_at(tokens, j + 1)
+            if u != none && scan_tok_is_word(content, u, "use", 3) {
+                val p: ref ScanToken = scan_token_at(tokens, j + 2)
+                if p != none && p.kind == TOK_PUNCT && p.ch == '(' {
+                    return true
+                }
+            }
+            return false
+        }
+        j++
+    }
+    return false
+}
+
+fn unused_variable_alloc() ref UnusedVariable = trust {
+    val mem: ref void = @alloc(@sizeof(UnusedVariable))
+    if mem == none {
+        return none
+    }
+    @memset(mem, 0, @sizeof(UnusedVariable) as usize)
+    return mem as ref UnusedVariable
+}
+
+pub fn free_unused_variables(vars: ref void) void = trust {
+    if vars == none {
+        return
+    }
+    val alloc: allocators.HeapAllocator = @zeroed
+    val list: mut ref void = vars
+    val n: usize = coll.PtrList.len(list)
+    val i: mut usize = 0
+    for {
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(list, i) is some v {
+            val u: ref UnusedVariable = @bitcast(v, ref void) as ref UnusedVariable
+            if u != none {
+                if u.name != none {
+                    @free(u.name as ref void)
+                }
+                @free(u as ref void)
+            }
+        }
+        i++
+    }
+    coll.PtrList.free[_](alloc, list)
+}
+
+/// Find `val` bindings that are never referenced in the supplied source.
+///
+/// Both module-level values and values inside function/test bodies are
+/// reported.  Bindings whose name is `_`, public module-level values, and
+/// import aliases (`val x = use("...")`) are ignored.  Usage detection is
+/// lexical but scope-aware: a local binding only counts references inside its
+/// enclosing function body, and identifiers in comments, strings, member
+/// accesses, and named-field labels are not treated as references.
+pub fn find_unused_variables(content: ref u8) ref void = trust {
+    val alloc: allocators.HeapAllocator = @zeroed
+    val result: mut ref void = none
+    match coll.PtrList.new[_](alloc, 16 as usize) {
+        ok l => {
+            result = l
+        }
+        err _ => {
+            return none
+        }
+    }
+    if content == none {
+        return result
+    }
+
+    val tokens: ref void = scan_tokens(content)
+    if tokens == none {
+        return result
+    }
+    val n: usize = coll.PtrList.len(tokens)
+
+    val candidates: mut ref void = none
+    match coll.PtrList.new[_](alloc, 16 as usize) {
+        ok l => {
+            candidates = l
+        }
+        err _ => {
+            free_scan_tokens(tokens)
+            return result
+        }
+    }
+
+    val ti: mut usize = 0
+    for {
+        if ti >= n {
+            break
+        }
+        val t: ref ScanToken = scan_token_at(tokens, ti)
+        if t != none && t.kind == TOK_IDENT && scan_tok_is_word(content, t, "val", 3) {
+            if ti + 1 < n {
+                val name_tok: mut ref ScanToken = scan_token_at(tokens, ti + 1)
+                if name_tok != none && name_tok.kind == TOK_IDENT {
+                    if !var_candidate_is_import(content, tokens, ti + 1) {
+                        val is_public: mut i64 = 0
+                        if ti > 0 {
+                            val prev: ref ScanToken = scan_token_at(tokens, ti - 1)
+                            if prev != none && prev.line == t.line &&
+                            scan_tok_is_word(content, prev, "pub", 3) {
+                                is_public = 1
+                            }
+                        }
+                        val c: mut ref VarCandidate = var_candidate_alloc()
+                        if c != none {
+                            c.name = raw_dup(@ptradd(content, name_tok.start), name_tok.len)
+                            c.line = name_tok.line
+                            c.col = name_tok.col
+                            c.token_index = (ti + 1) as i64
+                            c.depth = name_tok.depth
+                            c.owner = name_tok.owner
+                            c.is_public = is_public
+                            name_tok.is_decl = 1
+                            val cv: usize = @bitcast(c as ref void, usize)
+                            match coll.PtrList.push[_](alloc, candidates, cv) {
+                                ok _ => {}
+                                err _ => {
+                                    if c.name != none {
+                                        @free(c.name as ref void)
+                                    }
+                                    @free(c as ref void)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ti++
+    }
+
+    val dn: usize = coll.PtrList.len(candidates)
+    val flags: ref void = @alloc(dn)
+    if flags != none && dn > 0 {
+        @memset(flags, 0, dn)
+    }
+    val di: mut usize = 0
+    for {
+        if di >= dn {
+            break
+        }
+        if coll.PtrList.get(candidates, di) is some dv {
+            val d: ref VarCandidate = @bitcast(dv, ref void) as ref VarCandidate
+            if d != none && d.name != none {
+                val name_len: i64 = str.len_raw(d.name)
+                val ui: mut usize = 0
+                for {
+                    if ui >= n {
+                        break
+                    }
+                    val u: ref ScanToken = scan_token_at(tokens, ui)
+                    if u != none && u.kind == TOK_IDENT && u.is_decl == 0 &&
+                    u.len == name_len &&
+                    strncmp(@ptradd(content, u.start), d.name, name_len as usize) == 0 {
+                        val prev_is_member: mut bool = false
+                        if ui > 0 {
+                            val prev: ref ScanToken = scan_token_at(tokens, ui - 1)
+                            if prev != none && prev.kind == TOK_PUNCT &&
+                            (prev.ch == '.' || prev.ch == '@') {
+                                prev_is_member = true
+                            }
+                        }
+                        val next_is_label: mut bool = false
+                        if ui + 1 < n {
+                            val next: ref ScanToken = scan_token_at(tokens, ui + 1)
+                            if next != none && next.kind == TOK_PUNCT && next.ch == ':' {
+                                next_is_label = true
+                            }
+                        }
+                        if !prev_is_member && !next_is_label {
+                            val in_scope: mut bool = true
+                            if d.owner != 0 {
+                                if u.owner != d.owner {
+                                    in_scope = false
+                                } elif u.line < d.line {
+                                    in_scope = false
+                                } elif u.line == d.line && u.col <= d.col {
+                                    in_scope = false
+                                } elif u.depth < d.depth {
+                                    in_scope = false
+                                }
+                            }
+                            if in_scope {
+                                if flags != none {
+                                    @store8(@ptradd(flags as ref u8, di as i64), 1 as u8)
+                                }
+                                break
+                            }
+                        }
+                    }
+                    ui++
+                }
+            }
+        }
+        di++
+    }
+
+    val oi: mut usize = 0
+    for {
+        if oi >= dn {
+            break
+        }
+        if coll.PtrList.get(candidates, oi) is some dv {
+            val d: ref VarCandidate = @bitcast(dv, ref void) as ref VarCandidate
+            val is_used: bool = flags != none && @load8(@ptradd(flags as ref u8, oi as i64)) != 0
+            if d != none && d.name != none && !is_used {
+                val is_public_global: bool = d.owner == 0 && d.is_public == 1
+                if !is_public_global && str.raw_cmp(d.name, "_") != 0 {
+                    val u: mut ref UnusedVariable = unused_variable_alloc()
+                    if u != none {
+                        u.name = raw_dup(@ptradd(d.name, 0), str.len_raw(d.name))
+                        u.line = d.line
+                        u.col = d.col
+                        val uv: usize = @bitcast(u as ref void, usize)
+                        match coll.PtrList.push[_](alloc, result, uv) {
+                            ok _ => {}
+                            err _ => {
+                                if u.name != none {
+                                    @free(u.name as ref void)
+                                }
+                                @free(u as ref void)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        oi++
+    }
+
+    if flags != none {
+        @free(flags)
+    }
+    free_var_candidates(candidates)
+    free_scan_tokens(tokens)
+    return result
+}
+
+test {
+    val src: ref u8 = "val used_top = 1\nval unused_top = 2\n\nfn f() void = {\n    val used_local = used_top\n    val unused_local = 3\n    trust @print(\"{d}\", {used_local})\n}\n"
+    val vars: mut ref void = trust find_unused_variables(src)
+    assert vars != none
+    assert coll.PtrList.len(vars) == 2
+
+    val saw_top: mut bool = false
+    val saw_local: mut bool = false
+    val i: mut usize = 0
+    for {
+        if i >= coll.PtrList.len(vars) {
+            break
+        }
+        if coll.PtrList.get(vars, i) is some v {
+            val u: ref UnusedVariable = trust @bitcast(v, ref void) as ref UnusedVariable
+            if str.raw_cmp(u.name, "unused_top") == 0 {
+                saw_top = u.line == 1
+            }
+            if str.raw_cmp(u.name, "unused_local") == 0 {
+                saw_local = u.line == 5
+            }
+        }
+        i++
+    }
+    assert saw_top
+    assert saw_local
+    trust free_unused_variables(vars)
+}
+
+test {
+    val src: ref u8 = "val used = 1\nval _ = 2\npub val exported = 3\nval io = use(\"std/stdio\")\nfn f() void = {\n    val s = \"unused text\"\n    // used in a comment\n    trust @print(\"{s}\", {s + used})\n}\n"
+    val vars: mut ref void = trust find_unused_variables(src)
+    assert vars != none
+    assert coll.PtrList.len(vars) == 0
+    trust free_unused_variables(vars)
+}
+
+test {
+    val src: ref u8 = "val obj = make()\nfn f() void = {\n    obj.run(1, other(2, 3), [4, 5])\n}\n"
+    val ctx_mem: ref void = @alloc(@sizeof(CallContext))
+    assert ctx_mem != none
+    trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
+    val ctx: mut ref CallContext = ctx_mem as ref CallContext
+    trust find_active_call(src, 2, 26, ctx)
+    assert ctx.fn_name != none
+    assert str.raw_cmp(ctx.fn_name, "run") == 0
+    assert ctx.qualifier != none
+    assert str.raw_cmp(ctx.qualifier, "obj") == 0
+    assert ctx.param_idx == 1
+    if ctx.fn_name != none {
+        trust @free(ctx.fn_name as ref void)
+    }
+    if ctx.qualifier != none {
+        trust @free(ctx.qualifier as ref void)
+    }
+    trust @free(ctx_mem)
+}
+
+test {
+    val src: ref u8 = "mod.Type.build(1, 2, 3)\n"
+    val ctx_mem: ref void = @alloc(@sizeof(CallContext))
+    assert ctx_mem != none
+    trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
+    val ctx: mut ref CallContext = ctx_mem as ref CallContext
+    trust find_active_call(src, 0, 18, ctx)
+    assert ctx.fn_name != none
+    assert str.raw_cmp(ctx.fn_name, "build") == 0
+    assert ctx.qualifier != none
+    assert str.raw_cmp(ctx.qualifier, "mod.Type") == 0
+    assert ctx.param_idx == 1
+    if ctx.fn_name != none {
+        trust @free(ctx.fn_name as ref void)
+    }
+    if ctx.qualifier != none {
+        trust @free(ctx.qualifier as ref void)
+    }
+    trust @free(ctx_mem)
+}
+
+test {
+    val src: ref u8 = "val p = trust @alloc(size)\n"
+    val ctx_mem: ref void = @alloc(@sizeof(CallContext))
+    assert ctx_mem != none
+    trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
+    val ctx: mut ref CallContext = ctx_mem as ref CallContext
+    trust find_active_call(src, 0, 23, ctx)
+    assert ctx.fn_name != none
+    assert str.raw_cmp(ctx.fn_name, "alloc") == 0
+    assert ctx.is_intrinsic == 1
+    if ctx.fn_name != none {
+        trust @free(ctx.fn_name as ref void)
+    }
+    if ctx.qualifier != none {
+        trust @free(ctx.qualifier as ref void)
+    }
+    trust @free(ctx_mem)
+}
+
 test {
     val src: ref u8 = "/// strlen docs\nextern (C) fn strlen(s: ref u8) i64 = \"strlen\"\n\nextern type Rect = {\n    x: i32\n}\n\nwhen linux {\n    extern (C) fn uname(buf: ref Rect) i32 = \"uname\"\n}\n"
     val syms: mut ref void = trust parse_file("extern_test.sx", src)
@@ -1840,7 +2746,7 @@ test {
                 saw_uname = sym.kind == SYM_FUNCTION && sym.col == 18
             }
         }
-        i = i + 1
+        i++
     }
     assert saw_strlen
     assert saw_rect
