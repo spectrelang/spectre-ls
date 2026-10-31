@@ -9,36 +9,49 @@ extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 extern (C) fn write(fd: i32, buf: ref void, count: usize) i64 = "write"
 
 fn raw_dup_h(s: ref u8, len: i64) ref u8 = trust {
-    if s == none || len <= 0 { return none }
+    if s == none || len <= 0 {
+        return none
+    }
     val buf: ref u8 = @alloc(len + 1) as ref u8
-    if buf == none { return none }
+    if buf == none {
+        return none
+    }
     @memcpy(buf as ref void, s as ref void, len as usize)
     @store8(@ptradd(buf, len), 0)
     return buf
 }
 
 fn raw_dup_cstr_h(s: ref u8) ref u8 = trust {
-    if s == none { return none }
+    if s == none {
+        return none
+    }
     val len: i64 = str.len_raw(s)
-    if len == 0 { return none }
+    if len == 0 {
+        return none
+    }
     return raw_dup_h(s, len)
 }
 
 fn starts_with_h(s: ref u8, slen: i64, prefix: ref u8, plen: i64) bool = trust {
-    if plen > slen || plen <= 0 { return false }
+    if plen > slen || plen <= 0 {
+        return false
+    }
     return strncmp(s, prefix, plen as usize) == 0
 }
 
 fn read_file_to_heap(path: ref u8) ref u8 = trust {
-    if path == none { return none }
+    if path == none {
+        return none
+    }
     val arena_res = allocators.Arena.new(2097152 as usize)
     match arena_res {
-        err _ => { return none }
+        err _ => {
+            return none
+        }
         ok arena => {
             val content: mut ref u8 = none
-            match fs.read_all[allocators.Arena](arena, path) {
-                some c => { content = raw_dup_cstr_h(c) }
-                none   => {}
+            if fs.read_all[allocators.Arena](arena, path) is some c {
+                content = raw_dup_cstr_h(c)
             }
             allocators.Arena.free(arena)
             return content
@@ -50,20 +63,30 @@ fn write_all(fd: i32, buf: ref void, count: usize) bool = trust {
     val written: mut i64 = 0
     val total: i64 = count as i64
     for {
-        if written >= total { break }
+        if written >= total {
+            break
+        }
         val n: i64 = write(fd, @ptradd(buf as ref u8, written) as ref void, (total - written) as usize)
-        if n <= 0 { return false }
+        if n <= 0 {
+            return false
+        }
         written = written + n
     }
     return true
 }
 
 pub fn write_response(body: ref u8) void = trust {
-    if body == none { return }
+    if body == none {
+        return
+    }
     val body_len: i64 = str.len_raw(body)
-    if body_len < 0 { return }
+    if body_len < 0 {
+        return
+    }
     val header: ref u8 = @fmt("Content-Length: {d}", {body_len})
-    if header == none { return }
+    if header == none {
+        return
+    }
     val hlen: i64 = str.len_raw(header)
     val sep: ref u8 = @alloc(5) as ref u8
     if sep == none {
@@ -88,17 +111,23 @@ pub fn write_response(body: ref u8) void = trust {
 
 fn sb_append_int(sb: str.StringBuilder, n: i64) void = trust {
     val s: ref u8 = @fmt("{d}", {n})
-    if s == none { return }
+    if s == none {
+        return
+    }
     str.StringBuilder.append_cstr(sb, s)
     @free(s as ref void)
 }
 
 fn sb_escape(sb: str.StringBuilder, s: ref u8) void = trust {
-    if s == none { return }
+    if s == none {
+        return
+    }
     val len: i64 = str.len_raw(s)
     val i: mut i64 = 0
     for {
-        if i >= len { break }
+        if i >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(s, i))
         if c == '"' {
             str.StringBuilder.append_cstr(sb, "\\\"")
@@ -186,44 +215,57 @@ pub fn handle_initialize(id_raw: ref void) void = trust {
 
 fn get_str_field(obj: ref void, key: ref u8) ref u8 = trust {
     match json.obj_get_str(obj, key) {
-        some s => { return s }
-        none   => { return none }
+        some s => {
+            return s
+        }
+        none   => {
+            return none
+        }
     }
 }
 
 fn get_int_field(obj: ref void, key: ref u8) i64 = trust {
     match json.obj_get_int(obj, key) {
-        some n => { return n }
-        none   => { return 0 }
+        some n => {
+            return n
+        }
+        none   => {
+            return 0
+        }
     }
 }
 
 fn get_obj_field(obj: ref void, key: ref u8) ref void = trust {
     match json.obj_get(obj, key) {
         some v => {
-            if json.val_is_object(v) { return v }
+            if json.val_is_object(v) {
+                return v
+            }
             return none
         }
-        none => { return none }
+        none => {
+            return none
+        }
     }
 }
 
 fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust {
-    if sym_list == none || name == none { return none }
+    if sym_list == none || name == none {
+        return none
+    }
     val n: usize = coll.PtrList.len(sym_list)
     val i: mut usize = 0
     for {
-        if i >= n { break }
-        match coll.PtrList.get(sym_list, i) {
-            some v => {
-                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-                if sym != none && sym.name != none {
-                    if str.rchar_cmp(sym.name, name) == 0 {
-                        return sym
-                    }
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(sym_list, i) is some v {
+            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            if sym != none && sym.name != none {
+                if str.raw_cmp(sym.name, name) == 0 {
+                    return sym
                 }
             }
-            none => {}
         }
         i++
     }
@@ -231,20 +273,21 @@ fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust 
 }
 
 fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust {
-    if sym_list == none || alias == none { return none }
+    if sym_list == none || alias == none {
+        return none
+    }
     val n: usize = coll.PtrList.len(sym_list)
     val i: mut usize = 0
     for {
-        if i >= n { break }
-        match coll.PtrList.get(sym_list, i) {
-            some v => {
-                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-                if sym != none && sym.kind == parser.SYM_MODULE &&
-                   sym.name != none && str.rchar_cmp(sym.name, alias) == 0 {
-                    return sym
-                }
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(sym_list, i) is some v {
+            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            if sym != none && sym.kind == parser.SYM_MODULE &&
+            sym.name != none && str.raw_cmp(sym.name, alias) == 0 {
+                return sym
             }
-            none => {}
         }
         i++
     }
@@ -260,53 +303,72 @@ fn is_ident_cont_h(c: u8) bool = {
 }
 
 fn param_name_eq(param_decl: ref u8, word: ref u8) bool = trust {
-    if param_decl == none || word == none { return false }
+    if param_decl == none || word == none {
+        return false
+    }
     val plen: i64 = str.len_raw(param_decl)
     val wlen: i64 = str.len_raw(word)
-    if plen <= 0 || wlen <= 0 { return false }
+    if plen <= 0 || wlen <= 0 {
+        return false
+    }
 
     val i: mut i64 = 0
     for {
-        if i >= plen { break }
+        if i >= plen {
+            break
+        }
         val c: u8 = @load8(@ptradd(param_decl, i))
-        if c != ' ' && c != '\t' { break }
+        if c != ' ' && c != '\t' {
+            break
+        }
         i++
     }
-    if i >= plen { return false }
-    if !is_ident_start_h(@load8(@ptradd(param_decl, i))) { return false }
+    if i >= plen {
+        return false
+    }
+    if !is_ident_start_h(@load8(@ptradd(param_decl, i))) {
+        return false
+    }
 
     val j: mut i64 = i + 1
     for {
-        if j >= plen { break }
-        if !is_ident_cont_h(@load8(@ptradd(param_decl, j))) { break }
+        if j >= plen {
+            break
+        }
+        if !is_ident_cont_h(@load8(@ptradd(param_decl, j))) {
+            break
+        }
         j++
     }
 
     val nlen: i64 = j - i
-    if nlen != wlen { return false }
+    if nlen != wlen {
+        return false
+    }
     return strncmp(@ptradd(param_decl, i), word, nlen as usize) == 0
 }
 
 fn find_enclosing_callable(sym_list: ref void, line: i64) ref parser.Symbol = trust {
-    if sym_list == none { return none }
+    if sym_list == none {
+        return none
+    }
     val n: usize = coll.PtrList.len(sym_list)
     val i: mut usize = 0
     val best_line: mut i64 = -1
     val best: mut ref parser.Symbol = none
 
     for {
-        if i >= n { break }
-        match coll.PtrList.get(sym_list, i) {
-            some v => {
-                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-                if sym != none &&
-                   (sym.kind == parser.SYM_FUNCTION || sym.kind == parser.SYM_METHOD) &&
-                   sym.line <= line && sym.line >= best_line {
-                    best = sym
-                    best_line = sym.line
-                }
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(sym_list, i) is some v {
+            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            if sym != none &&
+            (sym.kind == parser.SYM_FUNCTION || sym.kind == parser.SYM_METHOD) &&
+            sym.line <= line && sym.line >= best_line {
+                best = sym
+                best_line = sym.line
             }
-            none => {}
         }
         i = i + 1
     }
@@ -319,28 +381,34 @@ fn lookup_parameter_decl(
     line: i64,
     word: ref u8
 ) ref u8 = trust {
-    if current_uri == none || word == none { return none }
+    if current_uri == none || word == none {
+        return none
+    }
 
     val cur_syms: mut ref void = none
-    match coll.StringMap.get(sym_store, current_uri) {
-        some v => { cur_syms = @bitcast(v, ref void) }
-        none   => {}
+    if coll.StringMap.get(sym_store, current_uri) is some v {
+        cur_syms = @bitcast(v, ref void)
     }
-    if cur_syms == none { return none }
+    if cur_syms == none {
+        return none
+    }
 
     val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
-    if fn_sym == none || fn_sym.params == none { return none }
+    if fn_sym == none || fn_sym.params == none {
+        return none
+    }
 
     val n: usize = coll.PtrList.len(fn_sym.params)
     val i: mut usize = 0
     for {
-        if i >= n { break }
-        match coll.PtrList.get(fn_sym.params, i) {
-            some v => {
-                val pstr: ref u8 = @bitcast(v, ref void) as ref u8
-                if param_name_eq(pstr, word) { return pstr }
+        if i >= n {
+            break
+        }
+        if coll.PtrList.get(fn_sym.params, i) is some v {
+            val pstr: ref u8 = @bitcast(v, ref void) as ref u8
+            if param_name_eq(pstr, word) {
+                return pstr
             }
-            none => {}
         }
         i = i + 1
     }
@@ -349,11 +417,15 @@ fn lookup_parameter_decl(
 }
 
 fn ensure_parsed(doc_store: ref void, sym_store: mut ref void, file_path: ref u8) void = trust {
-    if file_path == none { return }
+    if file_path == none {
+        return
+    }
     val uri: ref u8 = parser.path_to_uri(file_path)
     val alloc: allocators.HeapAllocator = @zeroed
 
-    if uri == none { return }
+    if uri == none {
+        return
+    }
     if coll.StringMap.contains(sym_store, uri) {
         @free(uri as ref void)
         return
@@ -386,37 +458,49 @@ fn lookup_symbol(
     word: ref u8,
     module_alias: ref u8
 ) ref parser.Symbol = trust {
-    if word == none { return none }
+    if word == none {
+        return none
+    }
 
     val cur_syms: mut ref void = none
-    match coll.StringMap.get(sym_store, current_uri) {
-        some v => { cur_syms = @bitcast(v, ref void) }
-        none   => {}
+    if coll.StringMap.get(sym_store, current_uri) is some v {
+        cur_syms = @bitcast(v, ref void)
     }
 
     if module_alias != none {
-        if cur_syms == none { return none }
+        if cur_syms == none {
+            return none
+        }
         val imp: ref parser.Symbol = find_import_sym(cur_syms, module_alias)
-        if imp == none || imp.ret_type == none { return none }
+        if imp == none || imp.ret_type == none {
+            return none
+        }
         val mod_file: ref u8 = parser.resolve_module_path(current_file, imp.ret_type)
-        if mod_file == none { return none }
+        if mod_file == none {
+            return none
+        }
         ensure_parsed(doc_store, sym_store, mod_file)
         val mod_uri: ref u8 = parser.path_to_uri(mod_file)
         @free(mod_file as ref void)
-        if mod_uri == none { return none }
+        if mod_uri == none {
+            return none
+        }
         val mod_syms: mut ref void = none
-        match coll.StringMap.get(sym_store, mod_uri) {
-            some v => { mod_syms = @bitcast(v, ref void) }
-            none   => {}
+        if coll.StringMap.get(sym_store, mod_uri) is some v {
+            mod_syms = @bitcast(v, ref void)
         }
         @free(mod_uri as ref void)
-        if mod_syms == none { return none }
+        if mod_syms == none {
+            return none
+        }
         return find_sym_by_name(mod_syms, word)
     }
 
     if cur_syms != none {
         val found: ref parser.Symbol = find_sym_by_name(cur_syms, word)
-        if found != none { return found }
+        if found != none {
+            return found
+        }
     }
 
     return none
@@ -425,124 +509,206 @@ fn lookup_symbol(
 fn trim_right_len_h(s: ref u8, len: i64) i64 = trust {
     val n: mut i64 = len
     for {
-        if n <= 0 { break }
+        if n <= 0 {
+            break
+        }
         val c: u8 = @load8(@ptradd(s, n - 1))
-        if c != ' ' && c != '\t' && c != '\r' && c != '\n' { break }
+        if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
+            break
+        }
         n = n - 1
     }
     return n
 }
 
 fn trim_left_dup_h(s: ref u8, len: i64) ref u8 = trust {
-    if s == none || len <= 0 { return none }
+    if s == none || len <= 0 {
+        return none
+    }
     val start: i64 = skip_ws_h(s, 0, len)
     val trimmed_len: i64 = trim_right_len_h(@ptradd(s, start), len - start)
-    if trimmed_len <= 0 { return none }
+    if trimmed_len <= 0 {
+        return none
+    }
     return raw_dup_h(@ptradd(s, start), trimmed_len)
 }
 
 fn skip_ws_h(s: ref u8, i: i64, len: i64) i64 = trust {
     val j: mut i64 = i
     for {
-        if j >= len { break }
+        if j >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(s, j))
-        if c != ' ' && c != '\t' { break }
+        if c != ' ' && c != '\t' {
+            break
+        }
         j++
     }
     return j
 }
 
 fn ident_len_h(s: ref u8, i: i64, len: i64) i64 = trust {
-    if i >= len { return 0 }
+    if i >= len {
+        return 0
+    }
     val c0: u8 = @load8(@ptradd(s, i))
-    if !is_ident_start_h(c0) { return 0 }
+    if !is_ident_start_h(c0) {
+        return 0
+    }
     val j: mut i64 = i + 1
     for {
-        if j >= len { break }
-        if !is_ident_cont_h(@load8(@ptradd(s, j))) { break }
+        if j >= len {
+            break
+        }
+        if !is_ident_cont_h(@load8(@ptradd(s, j))) {
+            break
+        }
         j++
     }
     return j - i
 }
 
 fn is_builtin_type_word(word: ref u8) bool = {
-    if word == none { return false }
-    return str.rchar_cmp(word, "i32") == 0 ||
-           str.rchar_cmp(word, "i64") == 0 ||
-           str.rchar_cmp(word, "u8") == 0 ||
-           str.rchar_cmp(word, "u32") == 0 ||
-           str.rchar_cmp(word, "u64") == 0 ||
-           str.rchar_cmp(word, "usize") == 0 ||
-           str.rchar_cmp(word, "f32") == 0 ||
-           str.rchar_cmp(word, "f64") == 0 ||
-           str.rchar_cmp(word, "bool") == 0 ||
-           str.rchar_cmp(word, "void") == 0 ||
-           str.rchar_cmp(word, "list") == 0 ||
-           str.rchar_cmp(word, "option") == 0 ||
-           str.rchar_cmp(word, "result") == 0
+    if word == none {
+        return false
+    }
+    return str.raw_cmp(word, "i32") == 0 ||
+    str.raw_cmp(word, "i64") == 0 ||
+    str.raw_cmp(word, "u8") == 0 ||
+    str.raw_cmp(word, "u32") == 0 ||
+    str.raw_cmp(word, "u64") == 0 ||
+    str.raw_cmp(word, "usize") == 0 ||
+    str.raw_cmp(word, "f32") == 0 ||
+    str.raw_cmp(word, "f64") == 0 ||
+    str.raw_cmp(word, "bool") == 0 ||
+    str.raw_cmp(word, "void") == 0 ||
+    str.raw_cmp(word, "list") == 0 ||
+    str.raw_cmp(word, "option") == 0 ||
+    str.raw_cmp(word, "result") == 0
 }
 
 fn builtin_type_signature(word: ref u8) ref u8 = {
-    if word == none { return none }
-    if str.rchar_cmp(word, "list") == 0   { return "list[T]" }
-    if str.rchar_cmp(word, "option") == 0 { return "option[T]" }
-    if str.rchar_cmp(word, "result") == 0 { return "result[T, E]" }
+    if word == none {
+        return none
+    }
+    if str.raw_cmp(word, "list") == 0 {
+        return "list[T]"
+    }
+    if str.raw_cmp(word, "option") == 0 {
+        return "option[T]"
+    }
+    if str.raw_cmp(word, "result") == 0 {
+        return "result[T, E]"
+    }
     return word
 }
 
 fn builtin_type_desc(word: ref u8) ref u8 = {
-    if word == none { return none }
-    if str.rchar_cmp(word, "i32") == 0   { return "32-bit signed integer" }
-    if str.rchar_cmp(word, "i64") == 0   { return "64-bit signed integer" }
-    if str.rchar_cmp(word, "u8") == 0    { return "8-bit unsigned integer" }
-    if str.rchar_cmp(word, "u32") == 0   { return "32-bit unsigned integer" }
-    if str.rchar_cmp(word, "u64") == 0   { return "64-bit unsigned integer" }
-    if str.rchar_cmp(word, "usize") == 0 { return "pointer-sized unsigned integer" }
-    if str.rchar_cmp(word, "f32") == 0   { return "32-bit floating point number" }
-    if str.rchar_cmp(word, "f64") == 0   { return "64-bit floating point number" }
-    if str.rchar_cmp(word, "bool") == 0  { return "boolean value" }
-    if str.rchar_cmp(word, "void") == 0  { return "no value" }
-    if str.rchar_cmp(word, "list") == 0  { return "builtin growable list type" }
-    if str.rchar_cmp(word, "option") == 0 { return "builtin optional value type" }
-    if str.rchar_cmp(word, "result") == 0 { return "builtin success-or-error type" }
+    if word == none {
+        return none
+    }
+    if str.raw_cmp(word, "i32") == 0 {
+        return "32-bit signed integer"
+    }
+    if str.raw_cmp(word, "i64") == 0 {
+        return "64-bit signed integer"
+    }
+    if str.raw_cmp(word, "u8") == 0 {
+        return "8-bit unsigned integer"
+    }
+    if str.raw_cmp(word, "u32") == 0 {
+        return "32-bit unsigned integer"
+    }
+    if str.raw_cmp(word, "u64") == 0 {
+        return "64-bit unsigned integer"
+    }
+    if str.raw_cmp(word, "usize") == 0 {
+        return "pointer-sized unsigned integer"
+    }
+    if str.raw_cmp(word, "f32") == 0 {
+        return "32-bit floating point number"
+    }
+    if str.raw_cmp(word, "f64") == 0 {
+        return "64-bit floating point number"
+    }
+    if str.raw_cmp(word, "bool") == 0 {
+        return "boolean value"
+    }
+    if str.raw_cmp(word, "void") == 0 {
+        return "no value"
+    }
+    if str.raw_cmp(word, "list") == 0 {
+        return "builtin growable list type"
+    }
+    if str.raw_cmp(word, "option") == 0 {
+        return "builtin optional value type"
+    }
+    if str.raw_cmp(word, "result") == 0 {
+        return "builtin success-or-error type"
+    }
     return none
 }
 
 fn builtin_type_size(word: ref u8) i64 = {
-    if word == none { return -1 }
-    if str.rchar_cmp(word, "i32") == 0 || str.rchar_cmp(word, "u32") == 0 || str.rchar_cmp(word, "f32") == 0 { return 4 }
-    if str.rchar_cmp(word, "u8") == 0 || str.rchar_cmp(word, "bool") == 0 { return 1 }
-    if str.rchar_cmp(word, "void") == 0 { return 0 }
-    if str.rchar_cmp(word, "list") == 0 { return 24 }
-    if str.rchar_cmp(word, "option") == 0 || str.rchar_cmp(word, "result") == 0 { return 16 }
+    if word == none {
+        return -1
+    }
+    if str.raw_cmp(word, "i32") == 0 || str.raw_cmp(word, "u32") == 0 || str.raw_cmp(word, "f32") == 0 {
+        return 4
+    }
+    if str.raw_cmp(word, "u8") == 0 || str.raw_cmp(word, "bool") == 0 {
+        return 1
+    }
+    if str.raw_cmp(word, "void") == 0 {
+        return 0
+    }
+    if str.raw_cmp(word, "list") == 0 {
+        return 24
+    }
+    if str.raw_cmp(word, "option") == 0 || str.raw_cmp(word, "result") == 0 {
+        return 16
+    }
     return 8
 }
 
 fn line_bounds_for_line_h(content: ref u8, target_line: i64, out_start: ref i64, out_end: ref i64) void = trust {
     @store(out_start as ref void, -1 as i64)
     @store(out_end as ref void, -1 as i64)
-    if content == none || target_line < 0 { return }
+    if content == none || target_line < 0 {
+        return
+    }
 
     val len: i64 = str.len_raw(content)
     val line_num: mut i64 = 0
     val i: mut i64 = 0
     val start: mut i64 = 0
     for {
-        if i >= len { break }
+        if i >= len {
+            break
+        }
         if line_num == target_line {
             start = i
             break
         }
-        if @load8(@ptradd(content, i)) == '\n' { line_num = line_num + 1 }
+        if @load8(@ptradd(content, i)) == '\n' {
+            line_num = line_num + 1
+        }
         i = i + 1
     }
-    if target_line > 0 && line_num != target_line { return }
+    if target_line > 0 && line_num != target_line {
+        return
+    }
 
     val end: mut i64 = start
     for {
-        if end >= len { break }
+        if end >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(content, end))
-        if c == '\n' || c == '\r' { break }
+        if c == '\n' || c == '\r' {
+            break
+        }
         end = end + 1
     }
     @store(out_start as ref void, start)
@@ -550,10 +716,14 @@ fn line_bounds_for_line_h(content: ref u8, target_line: i64, out_start: ref i64,
 }
 
 fn line_matches_variable_decl(line: ref u8, line_len: i64, word: ref u8) bool = trust {
-    if line == none || word == none || line_len <= 0 { return false }
+    if line == none || word == none || line_len <= 0 {
+        return false
+    }
     val wlen: i64 = str.len_raw(word)
     val i: mut i64 = skip_ws_h(line, 0, line_len)
-    if i >= line_len { return false }
+    if i >= line_len {
+        return false
+    }
     if starts_with_h(@ptradd(line, i), line_len - i, "pub ", 4) {
         i = skip_ws_h(line, i + 4, line_len)
     }
@@ -561,18 +731,28 @@ fn line_matches_variable_decl(line: ref u8, line_len: i64, word: ref u8) bool = 
     if starts_with_h(@ptradd(line, i), line_len - i, "val ", 4) {
         i = skip_ws_h(line, i + 4, line_len)
         val name_len: i64 = ident_len_h(line, i, line_len)
-        if name_len != wlen || name_len <= 0 { return false }
-        if strncmp(@ptradd(line, i), word, name_len as usize) != 0 { return false }
+        if name_len != wlen || name_len <= 0 {
+            return false
+        }
+        if strncmp(@ptradd(line, i), word, name_len as usize) != 0 {
+            return false
+        }
         i = skip_ws_h(line, i + name_len, line_len)
-        if starts_with_h(@ptradd(line, i), line_len - i, "= use(\"", 7) { return false }
+        if starts_with_h(@ptradd(line, i), line_len - i, "= use(\"", 7) {
+            return false
+        }
         return true
     }
 
     if starts_with_h(@ptradd(line, i), line_len - i, "for ", 4) {
         i = skip_ws_h(line, i + 4, line_len)
         val name_len: i64 = ident_len_h(line, i, line_len)
-        if name_len != wlen || name_len <= 0 { return false }
-        if strncmp(@ptradd(line, i), word, name_len as usize) != 0 { return false }
+        if name_len != wlen || name_len <= 0 {
+            return false
+        }
+        if strncmp(@ptradd(line, i), word, name_len as usize) != 0 {
+            return false
+        }
         i = skip_ws_h(line, i + name_len, line_len)
         if starts_with_h(@ptradd(line, i), line_len - i, "in", 2) {
             val next_ok: bool = (i + 2 >= line_len) || !is_ident_cont_h(@load8(@ptradd(line, i + 2)))
@@ -592,26 +772,37 @@ fn lookup_local_variable_decl(
     out_line: ref i64
 ) ref u8 = trust {
     @store(out_line as ref void, -1 as i64)
-    if current_uri == none || content == none || word == none { return none }
+    if current_uri == none || content == none || word == none {
+        return none
+    }
 
     val cur_syms: mut ref void = none
-    match coll.StringMap.get(sym_store, current_uri) {
-        some v => { cur_syms = @bitcast(v, ref void) }
-        none   => {}
+    if coll.StringMap.get(sym_store, current_uri) is some v {
+        cur_syms = @bitcast(v, ref void)
     }
-    if cur_syms == none { return none }
+    if cur_syms == none {
+        return none
+    }
 
     val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
-    if fn_sym == none { return none }
+    if fn_sym == none {
+        return none
+    }
 
     val slot_count: i64 = 64
     val line_slots: ref void = @alloc(slot_count * 8)
     val start_slots: ref void = @alloc(slot_count * 8)
     val end_slots: ref void = @alloc(slot_count * 8)
     if line_slots == none || start_slots == none || end_slots == none {
-        if line_slots  != none { @free(line_slots) }
-        if start_slots != none { @free(start_slots) }
-        if end_slots   != none { @free(end_slots) }
+        if line_slots  != none {
+            @free(line_slots)
+        }
+        if start_slots != none {
+            @free(start_slots)
+        }
+        if end_slots   != none {
+            @free(end_slots)
+        }
         return none
     }
     @memset(line_slots, 255, slot_count * 8)
@@ -621,19 +812,25 @@ fn lookup_local_variable_decl(
     val depth: mut i64 = 0
     val cur_line: mut i64 = fn_sym.line
     for {
-        if cur_line > line { break }
+        if cur_line > line {
+            break
+        }
         val ls: mut i64 = -1
         val le: mut i64 = -1
         line_bounds_for_line_h(content, cur_line, @addr(ls), @addr(le))
-        if ls < 0 || le < ls { break }
+        if ls < 0 || le < ls {
+            break
+        }
 
         val scan_end: mut i64 = le
-        if cur_line == line && cursor_off >= ls && cursor_off < le { scan_end = cursor_off }
+        if cur_line == line && cursor_off >= ls && cursor_off < le {
+            scan_end = cursor_off
+        }
         val scan_len: i64 = scan_end - ls
 
         if cur_line > fn_sym.line && scan_len > 0 &&
-           line_matches_variable_decl(@ptradd(content, ls), scan_len, word) &&
-           depth >= 0 && depth < slot_count {
+        line_matches_variable_decl(@ptradd(content, ls), scan_len, word) &&
+        depth >= 0 && depth < slot_count {
             @store(@ptradd(line_slots as ref u8, depth * 8) as ref void, cur_line)
             @store(@ptradd(start_slots as ref u8, depth * 8) as ref void, ls)
             @store(@ptradd(end_slots as ref u8, depth * 8) as ref void, ls + trim_right_len_h(@ptradd(content, ls), scan_len))
@@ -641,7 +838,9 @@ fn lookup_local_variable_decl(
 
         val i: mut i64 = ls
         for {
-            if i >= scan_end { break }
+            if i >= scan_end {
+                break
+            }
             val c: u8 = @load8(@ptradd(content, i))
             if c == '{' {
                 if depth + 1 < slot_count {
@@ -656,7 +855,9 @@ fn lookup_local_variable_decl(
                     @store(@ptradd(start_slots as ref u8, depth * 8) as ref void, -1 as i64)
                     @store(@ptradd(end_slots as ref u8, depth * 8) as ref void, -1 as i64)
                 }
-                if depth > 0 { depth = depth - 1 }
+                if depth > 0 {
+                    depth = depth - 1
+                }
             }
             i++
         }
@@ -667,7 +868,9 @@ fn lookup_local_variable_decl(
     val best_depth: mut i64 = depth
     val result: mut ref u8 = none
     for {
-        if best_depth < 0 { break }
+        if best_depth < 0 {
+            break
+        }
         val decl_line: i64 = @load(@ptradd(line_slots as ref u8, best_depth * 8) as ref void) as i64
         if decl_line >= 0 {
             val start_off: i64 = @load(@ptradd(start_slots as ref u8, best_depth * 8) as ref void) as i64
@@ -695,7 +898,9 @@ fn lookup_global_variable_decl(
     out_line: ref i64
 ) ref u8 = trust {
     @store(out_line as ref void, -1 as i64)
-    if content == none || word == none { return none }
+    if content == none || word == none {
+        return none
+    }
 
     val best_start: mut i64 = -1
     val best_end: mut i64 = -1
@@ -703,18 +908,24 @@ fn lookup_global_variable_decl(
     val depth: mut i64 = 0
     val cur_line: mut i64 = 0
     for {
-        if cur_line > line { break }
+        if cur_line > line {
+            break
+        }
         val ls: mut i64 = -1
         val le: mut i64 = -1
         line_bounds_for_line_h(content, cur_line, @addr(ls), @addr(le))
-        if ls < 0 || le < ls { break }
+        if ls < 0 || le < ls {
+            break
+        }
 
         val scan_end: mut i64 = le
-        if cur_line == line && cursor_off >= ls && cursor_off < le { scan_end = cursor_off }
+        if cur_line == line && cursor_off >= ls && cursor_off < le {
+            scan_end = cursor_off
+        }
         val scan_len: i64 = scan_end - ls
 
         if depth == 0 && scan_len > 0 &&
-           line_matches_variable_decl(@ptradd(content, ls), scan_len, word) {
+        line_matches_variable_decl(@ptradd(content, ls), scan_len, word) {
             best_start = ls
             best_end = ls + trim_right_len_h(@ptradd(content, ls), scan_len)
             best_line = cur_line
@@ -722,12 +933,16 @@ fn lookup_global_variable_decl(
 
         val i: mut i64 = ls
         for {
-            if i >= scan_end { break }
+            if i >= scan_end {
+                break
+            }
             val c: u8 = @load8(@ptradd(content, i))
             if c == '{' {
                 depth = depth + 1
             } elif c == '}' {
-                if depth > 0 { depth = depth - 1 }
+                if depth > 0 {
+                    depth = depth - 1
+                }
             }
             i++
         }
@@ -735,30 +950,39 @@ fn lookup_global_variable_decl(
         cur_line++
     }
 
-    if best_start < 0 || best_end <= best_start { return none }
+    if best_start < 0 || best_end <= best_start {
+        return none
+    }
     @store(out_line as ref void, best_line)
     return trim_left_dup_h(@ptradd(content, best_start), best_end - best_start)
 }
 
 fn get_content_for_file(doc_store: ref void, file_path: ref u8) ref u8 = trust {
-    if doc_store == none || file_path == none { return none }
+    if doc_store == none || file_path == none {
+        return none
+    }
     val uri: ref u8 = parser.path_to_uri(file_path)
-    if uri == none { return none }
+    if uri == none {
+        return none
+    }
     val content: mut ref u8 = none
-    match coll.StringMap.get(doc_store, uri) {
-        some v => { content = @bitcast(v, ref void) as ref u8 }
-        none   => {}
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
     }
     @free(uri as ref void)
     return content
 }
 
 fn extract_definition_block(content: ref u8, line: i64) ref u8 = trust {
-    if content == none || line < 0 { return none }
+    if content == none || line < 0 {
+        return none
+    }
     val ls: mut i64 = -1
     val le: mut i64 = -1
     line_bounds_for_line_h(content, line, @addr(ls), @addr(le))
-    if ls < 0 || le < ls { return none }
+    if ls < 0 || le < ls {
+        return none
+    }
 
     val len: i64 = str.len_raw(content)
     val i: mut i64 = ls
@@ -767,7 +991,9 @@ fn extract_definition_block(content: ref u8, line: i64) ref u8 = trust {
     val end_off: mut i64 = le
 
     for {
-        if i >= len { break }
+        if i >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(content, i))
         if c == '{' {
             depth = depth + 1
@@ -786,37 +1012,57 @@ fn extract_definition_block(content: ref u8, line: i64) ref u8 = trust {
         i++
     }
 
-    if seen_brace == 1 && end_off < le { end_off = le }
+    if seen_brace == 1 && end_off < le {
+        end_off = le
+    }
     val trimmed_len: i64 = trim_right_len_h(@ptradd(content, ls), end_off - ls)
-    if trimmed_len <= 0 { return none }
+    if trimmed_len <= 0 {
+        return none
+    }
     return raw_dup_h(@ptradd(content, ls), trimmed_len)
 }
 
 fn align_up_h(n: i64, align: i64) i64 = {
-    if align <= 1 { return n }
+    if align <= 1 {
+        return n
+    }
     return ((n + align - 1) / align) * align
 }
 
 fn field_align_h(size: i64) i64 = {
-    if size <= 1 { return 1 }
-    if size >= 8 { return 8 }
-    if size >= 4 { return 4 }
-    if size >= 2 { return 2 }
+    if size <= 1 {
+        return 1
+    }
+    if size >= 8 {
+        return 8
+    }
+    if size >= 4 {
+        return 4
+    }
+    if size >= 2 {
+        return 2
+    }
     return 1
 }
 
 fn find_matching_close_h(s: ref u8, len: i64, open_idx: i64, open_ch: u8, close_ch: u8) i64 = trust {
-    if s == none || open_idx < 0 || open_idx >= len { return -1 }
+    if s == none || open_idx < 0 || open_idx >= len {
+        return -1
+    }
     val depth: mut i64 = 0
     val i: mut i64 = open_idx
     for {
-        if i >= len { break }
+        if i >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(s, i))
         if c == open_ch {
             depth = depth + 1
         } elif c == close_ch {
             depth = depth - 1
-            if depth == 0 { return i }
+            if depth == 0 {
+                return i
+            }
         }
         i++
     }
@@ -824,14 +1070,22 @@ fn find_matching_close_h(s: ref u8, len: i64, open_idx: i64, open_ch: u8, close_
 }
 
 fn contains_substr_h(s: ref u8, needle: ref u8) bool = trust {
-    if s == none || needle == none { return false }
+    if s == none || needle == none {
+        return false
+    }
     val slen: i64 = str.len_raw(s)
     val nlen: i64 = str.len_raw(needle)
-    if nlen <= 0 || nlen > slen { return false }
+    if nlen <= 0 || nlen > slen {
+        return false
+    }
     val i: mut i64 = 0
     for {
-        if i + nlen > slen { break }
-        if strncmp(@ptradd(s, i), needle, nlen as usize) == 0 { return true }
+        if i + nlen > slen {
+            break
+        }
+        if strncmp(@ptradd(s, i), needle, nlen as usize) == 0 {
+            return true
+        }
         i++
     }
     return false
@@ -843,21 +1097,35 @@ fn estimate_type_symbol_size(
     sym: ref parser.Symbol,
     depth: i64
 ) i64 = trust {
-    if sym == none { return 8 }
-    if depth > 8 { return 8 }
-    if sym.kind == parser.SYM_ENUM { return 8 }
-    if sym.kind != parser.SYM_TYPE && sym.kind != parser.SYM_UNION { return 8 }
+    if sym == none {
+        return 8
+    }
+    if depth > 8 {
+        return 8
+    }
+    if sym.kind == parser.SYM_ENUM {
+        return 8
+    }
+    if sym.kind != parser.SYM_TYPE && sym.kind != parser.SYM_UNION {
+        return 8
+    }
 
     val content: ref u8 = get_content_for_file(doc_store, sym.file)
     val def: ref u8 = extract_definition_block(content, sym.line)
-    if def == none { return 8 }
+    if def == none {
+        return 8
+    }
 
     val dlen: i64 = str.len_raw(def)
     val open_idx: mut i64 = -1
     val i: mut i64 = 0
     for {
-        if i >= dlen { break }
-        if @load8(@ptradd(def, i)) == '{' { open_idx = i break }
+        if i >= dlen {
+            break
+        }
+        if @load8(@ptradd(def, i)) == '{' {
+            open_idx = i break
+        }
         i++
     }
     if open_idx < 0 {
@@ -887,11 +1155,25 @@ fn estimate_type_symbol_size(
                 emit = 1
             } else {
                 val c: u8 = @load8(@ptradd(body, j))
-                if c == '[' { sq_depth = sq_depth + 1 }
-                elif c == ']' { if sq_depth > 0 { sq_depth = sq_depth - 1 } }
-                elif c == '(' { paren_depth = paren_depth + 1 }
-                elif c == ')' { if paren_depth > 0 { paren_depth = paren_depth - 1 } }
-                elif c == '|' && sq_depth == 0 && paren_depth == 0 { emit = 1 }
+                if c == '[' {
+                    sq_depth = sq_depth + 1
+                }
+                elif c == ']' {
+                    if sq_depth > 0 {
+                        sq_depth = sq_depth - 1
+                    }
+                }
+                elif c == '(' {
+                    paren_depth = paren_depth + 1
+                }
+                elif c == ')' {
+                    if paren_depth > 0 {
+                        paren_depth = paren_depth - 1
+                    }
+                }
+                elif c == '|' && sq_depth == 0 && paren_depth == 0 {
+                    emit = 1
+                }
             }
 
             if emit == 1 {
@@ -903,8 +1185,12 @@ fn estimate_type_symbol_size(
                         val open_paren: mut i64 = -1
                         val k: mut i64 = 0
                         for {
-                            if k >= vlen { break }
-                            if @load8(@ptradd(variant, k)) == '(' { open_paren = k break }
+                            if k >= vlen {
+                                break
+                            }
+                            if @load8(@ptradd(variant, k)) == '(' {
+                                open_paren = k break
+                            }
                             k++
                         }
                         val payload_size: mut i64 = 0
@@ -923,11 +1209,25 @@ fn estimate_type_symbol_size(
                                         arg_emit = 1
                                     } else {
                                         val cc: u8 = @load8(@ptradd(variant, m))
-                                        if cc == '[' { arg_sq_depth = arg_sq_depth + 1 }
-                                        elif cc == ']' { if arg_sq_depth > 0 { arg_sq_depth = arg_sq_depth - 1 } }
-                                        elif cc == '(' { arg_paren_depth = arg_paren_depth + 1 }
-                                        elif cc == ')' { if arg_paren_depth > 0 { arg_paren_depth = arg_paren_depth - 1 } }
-                                        elif cc == ',' && arg_sq_depth == 0 && arg_paren_depth == 0 { arg_emit = 1 }
+                                        if cc == '[' {
+                                            arg_sq_depth = arg_sq_depth + 1
+                                        }
+                                        elif cc == ']' {
+                                            if arg_sq_depth > 0 {
+                                                arg_sq_depth = arg_sq_depth - 1
+                                            }
+                                        }
+                                        elif cc == '(' {
+                                            arg_paren_depth = arg_paren_depth + 1
+                                        }
+                                        elif cc == ')' {
+                                            if arg_paren_depth > 0 {
+                                                arg_paren_depth = arg_paren_depth - 1
+                                            }
+                                        }
+                                        elif cc == ',' && arg_sq_depth == 0 && arg_paren_depth == 0 {
+                                            arg_emit = 1
+                                        }
                                     }
                                     if arg_emit == 1 {
                                         val arg_len: i64 = trim_right_len_h(@ptradd(variant, arg_start), m - arg_start)
@@ -941,25 +1241,33 @@ fn estimate_type_symbol_size(
                                                 val arg_align: i64 = field_align_h(arg_size)
                                                 running = align_up_h(running, arg_align)
                                                 running = running + arg_size
-                                                if arg_align > running_align { running_align = arg_align }
+                                                if arg_align > running_align {
+                                                    running_align = arg_align
+                                                }
                                             }
                                         }
                                         arg_start = m + 1
                                     }
-                                    if m >= close_paren { break }
+                                    if m >= close_paren {
+                                        break
+                                    }
                                     m++
                                 }
                                 payload_size = align_up_h(running, running_align)
                             }
                         }
-                        if payload_size > max_payload { max_payload = payload_size }
+                        if payload_size > max_payload {
+                            max_payload = payload_size
+                        }
                         @free(variant as ref void)
                     }
                 }
                 seg_start = j + 1
             }
 
-            if j >= body_len { break }
+            if j >= body_len {
+                break
+            }
             j++
         }
         result = align_up_h(max_payload + 8, 8)
@@ -974,7 +1282,9 @@ fn estimate_type_symbol_size(
                 emit = 1
             } else {
                 val c: u8 = @load8(@ptradd(body, j))
-                if c == '\n' || c == '\r' { emit = 1 }
+                if c == '\n' || c == '\r' {
+                    emit = 1
+                }
             }
 
             if emit == 1 {
@@ -986,8 +1296,12 @@ fn estimate_type_symbol_size(
                         val colon_idx: mut i64 = -1
                         val k: mut i64 = 0
                         for {
-                            if k >= flen { break }
-                            if @load8(@ptradd(field_line, k)) == ':' { colon_idx = k break }
+                            if k >= flen {
+                                break
+                            }
+                            if @load8(@ptradd(field_line, k)) == ':' {
+                                colon_idx = k break
+                            }
                             k++
                         }
                         if colon_idx >= 0 {
@@ -1003,7 +1317,9 @@ fn estimate_type_symbol_size(
                                     val align: i64 = field_align_h(field_size)
                                     offset = align_up_h(offset, align)
                                     offset = offset + field_size
-                                    if align > max_align { max_align = align }
+                                    if align > max_align {
+                                        max_align = align
+                                    }
                                 }
                             }
                         }
@@ -1013,13 +1329,17 @@ fn estimate_type_symbol_size(
                 line_start = j + 1
             }
 
-            if j >= body_len { break }
+            if j >= body_len {
+                break
+            }
             j++
         }
         result = align_up_h(offset, max_align)
     }
 
-    if current_uri_for_sym != none { @free(current_uri_for_sym as ref void) }
+    if current_uri_for_sym != none {
+        @free(current_uri_for_sym as ref void)
+    }
     @free(def as ref void)
     return result
 }
@@ -1032,16 +1352,24 @@ fn estimate_type_expr_size(
     type_expr: ref u8,
     depth: i64
 ) i64 = trust {
-    if type_expr == none { return 8 }
-    if depth > 8 { return 8 }
+    if type_expr == none {
+        return 8
+    }
+    if depth > 8 {
+        return 8
+    }
 
     val expr_len: i64 = str.len_raw(type_expr)
     val start: i64 = skip_ws_h(type_expr, 0, expr_len)
     val trimmed_len: i64 = trim_right_len_h(@ptradd(type_expr, start), expr_len - start)
-    if trimmed_len <= 0 { return 8 }
+    if trimmed_len <= 0 {
+        return 8
+    }
 
     val expr: ref u8 = raw_dup_h(@ptradd(type_expr, start), trimmed_len)
-    if expr == none { return 8 }
+    if expr == none {
+        return 8
+    }
     val len: i64 = str.len_raw(expr)
 
     if starts_with_h(expr, len, "mut ", 4) {
@@ -1069,7 +1397,9 @@ fn estimate_type_expr_size(
         if close_idx > 6 {
             val inner: ref u8 = raw_dup_h(@ptradd(expr, 7), close_idx - 7)
             val inner_size: i64 = estimate_type_expr_size(doc_store, sym_store, current_uri, current_file, inner, depth + 1)
-            if inner != none { @free(inner as ref void) }
+            if inner != none {
+                @free(inner as ref void)
+            }
             @free(expr as ref void)
             return align_up_h(inner_size, field_align_h(inner_size)) + 8
         }
@@ -1087,13 +1417,29 @@ fn estimate_type_expr_size(
                 val comma_idx: mut i64 = -1
                 val i: mut i64 = 0
                 for {
-                    if i >= ilen { break }
+                    if i >= ilen {
+                        break
+                    }
                     val c: u8 = @load8(@ptradd(inner, i))
-                    if c == '[' { sq_depth = sq_depth + 1 }
-                    elif c == ']' { if sq_depth > 0 { sq_depth = sq_depth - 1 } }
-                    elif c == '(' { paren_depth = paren_depth + 1 }
-                    elif c == ')' { if paren_depth > 0 { paren_depth = paren_depth - 1 } }
-                    elif c == ',' && sq_depth == 0 && paren_depth == 0 { comma_idx = i break }
+                    if c == '[' {
+                        sq_depth = sq_depth + 1
+                    }
+                    elif c == ']' {
+                        if sq_depth > 0 {
+                            sq_depth = sq_depth - 1
+                        }
+                    }
+                    elif c == '(' {
+                        paren_depth = paren_depth + 1
+                    }
+                    elif c == ')' {
+                        if paren_depth > 0 {
+                            paren_depth = paren_depth - 1
+                        }
+                    }
+                    elif c == ',' && sq_depth == 0 && paren_depth == 0 {
+                        comma_idx = i break
+                    }
                     i++
                 }
                 if comma_idx >= 0 {
@@ -1101,12 +1447,18 @@ fn estimate_type_expr_size(
                     val err_expr: ref u8 = raw_dup_h(@ptradd(inner, comma_idx + 1), ilen - comma_idx - 1)
                     val ok_size: i64 = estimate_type_expr_size(doc_store, sym_store, current_uri, current_file, ok_expr, depth + 1)
                     val err_size: i64 = estimate_type_expr_size(doc_store, sym_store, current_uri, current_file, err_expr, depth + 1)
-                    if ok_expr != none { @free(ok_expr as ref void) }
-                    if err_expr != none { @free(err_expr as ref void) }
+                    if ok_expr != none {
+                        @free(ok_expr as ref void)
+                    }
+                    if err_expr != none {
+                        @free(err_expr as ref void)
+                    }
                     @free(inner as ref void)
                     @free(expr as ref void)
                     val max_sz: mut i64 = ok_size
-                    if err_size > max_sz { max_sz = err_size }
+                    if err_size > max_sz {
+                        max_sz = err_size
+                    }
                     return align_up_h(max_sz, field_align_h(max_sz)) + 8
                 }
                 @free(inner as ref void)
@@ -1119,8 +1471,12 @@ fn estimate_type_expr_size(
     val dot_idx: mut i64 = -1
     val i: mut i64 = 0
     for {
-        if i >= len { break }
-        if @load8(@ptradd(expr, i)) == '.' { dot_idx = i break }
+        if i >= len {
+            break
+        }
+        if @load8(@ptradd(expr, i)) == '.' {
+            dot_idx = i break
+        }
         i++
     }
 
@@ -1136,11 +1492,17 @@ fn estimate_type_expr_size(
     val resolved: ref parser.Symbol = lookup_symbol(
         doc_store, sym_store, current_uri, current_file, lookup_name, lookup_alias
     )
-    if lookup_name != none { @free(lookup_name as ref void) }
-    if lookup_alias != none { @free(lookup_alias as ref void) }
+    if lookup_name != none {
+        @free(lookup_name as ref void)
+    }
+    if lookup_alias != none {
+        @free(lookup_alias as ref void)
+    }
     @free(expr as ref void)
 
-    if resolved == none { return 8 }
+    if resolved == none {
+        return 8
+    }
     return estimate_type_symbol_size(doc_store, sym_store, resolved, depth + 1)
 }
 
@@ -1152,7 +1514,9 @@ fn append_type_hover_contents(
     _: ref u8,
     sym: ref parser.Symbol
 ) void = trust {
-    if sym == none { return }
+    if sym == none {
+        return
+    }
     val def_content: ref u8 = get_content_for_file(doc_store, sym.file)
     val definition: ref u8 = extract_definition_block(def_content, sym.line)
     val approx_size: i64 = estimate_type_symbol_size(doc_store, sym_store, sym, 0)
@@ -1178,7 +1542,9 @@ fn append_type_hover_contents(
         sb_escape(sb, sym.doc)
     }
 
-    if definition != none { @free(definition as ref void) }
+    if definition != none {
+        @free(definition as ref void)
+    }
 }
 
 fn append_builtin_type_hover_contents(sb: str.StringBuilder, word: ref u8) void = trust {
@@ -1192,35 +1558,59 @@ fn append_builtin_type_hover_contents(sb: str.StringBuilder, word: ref u8) void 
 }
 
 fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trust {
-    if doc_store == none || sym == none || sym.file == none || sym.line < 0 { return false }
-    if sym.kind != parser.SYM_FUNCTION && sym.kind != parser.SYM_METHOD { return false }
+    if doc_store == none || sym == none || sym.file == none || sym.line < 0 {
+        return false
+    }
+    if sym.kind != parser.SYM_FUNCTION && sym.kind != parser.SYM_METHOD {
+        return false
+    }
     val content: ref u8 = get_content_for_file(doc_store, sym.file)
-    if content == none { return false }
+    if content == none {
+        return false
+    }
 
     val ls: mut i64 = -1
     val le: mut i64 = -1
     line_bounds_for_line_h(content, sym.line, @addr(ls), @addr(le))
-    if ls < 0 || le <= ls { return false }
+    if ls < 0 || le <= ls {
+        return false
+    }
 
     val line_len: i64 = trim_right_len_h(@ptradd(content, ls), le - ls)
-    if line_len <= 0 { return false }
+    if line_len <= 0 {
+        return false
+    }
     val line_text: ref u8 = trim_left_dup_h(@ptradd(content, ls), line_len)
-    if line_text == none { return false }
+    if line_text == none {
+        return false
+    }
     val llen: i64 = str.len_raw(line_text)
     val unverified: bool = contains_substr_h(line_text, "= trust") ||
-                           contains_substr_h(line_text, " = trust") ||
-                           starts_with_h(line_text, llen, "trust ", 6)
+    contains_substr_h(line_text, " = trust") ||
+    starts_with_h(line_text, llen, "trust ", 6)
     @free(line_text as ref void)
     return unverified
 }
 
 fn sym_kind_to_lsp(kind: i64) i64 = {
-    if kind == parser.SYM_FUNCTION { return 12 }
-    if kind == parser.SYM_METHOD   { return 6  }
-    if kind == parser.SYM_TYPE     { return 23 }
-    if kind == parser.SYM_ENUM     { return 10 }
-    if kind == parser.SYM_UNION    { return 23 }
-    if kind == parser.SYM_MODULE   { return 2  }
+    if kind == parser.SYM_FUNCTION {
+        return 12
+    }
+    if kind == parser.SYM_METHOD {
+        return 6
+    }
+    if kind == parser.SYM_TYPE {
+        return 23
+    }
+    if kind == parser.SYM_ENUM {
+        return 10
+    }
+    if kind == parser.SYM_UNION {
+        return 23
+    }
+    if kind == parser.SYM_MODULE {
+        return 2
+    }
     return 13
 }
 
@@ -1237,16 +1627,24 @@ fn append_range(sb: str.StringBuilder, line: i64, cs: i64, ce: i64) void = trust
 }
 
 fn first_line_dup(s: ref u8) ref u8 = trust {
-    if s == none { return none }
+    if s == none {
+        return none
+    }
     val len: i64 = str.len_raw(s)
     val i: mut i64 = 0
     for {
-        if i >= len { break }
+        if i >= len {
+            break
+        }
         val c: u8 = @load8(@ptradd(s, i))
-        if c == '\n' || c == '\r' { break }
+        if c == '\n' || c == '\r' {
+            break
+        }
         i = i + 1
     }
-    if i == 0 { return none }
+    if i == 0 {
+        return none
+    }
     return raw_dup_h(s, i)
 }
 
@@ -1256,29 +1654,40 @@ pub fn handle_hover(
     id_raw: ref void,
     params: ref void
 ) void = trust {
-    if params == none { send_null_result(id_raw) return }
-    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    if params == none {
+        send_null_result(id_raw) return
+    }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
     val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    if td_obj == none || pos_obj == none {
+        send_null_result(id_raw) return
+    }
     val uri: ref u8 = get_str_field(td_obj, "uri")
-    val line: i64   = get_int_field(pos_obj, "line")
-    val col: i64    = get_int_field(pos_obj, "character")
-    if uri == none { send_null_result(id_raw) return }
+    val line: i64 = get_int_field(pos_obj, "line")
+    val col: i64 = get_int_field(pos_obj, "character")
+    if uri == none {
+        send_null_result(id_raw) return
+    }
 
     val content: mut ref u8 = none
-    match coll.StringMap.get(doc_store, uri) {
-        some v => { content = @bitcast(v, ref void) as ref u8 }
-        none   => {}
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
     }
-    if content == none { send_null_result(id_raw) return }
+    if content == none {
+        send_null_result(id_raw) return
+    }
 
     val ws: mut i64 = -1
     val wl: mut i64 = 0
     parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
-    if ws < 0 || wl <= 0 { send_null_result(id_raw) return }
+    if ws < 0 || wl <= 0 {
+        send_null_result(id_raw) return
+    }
 
     val word: ref u8 = @alloc(wl + 1) as ref u8
-    if word == none { send_null_result(id_raw) return }
+    if word == none {
+        send_null_result(id_raw) return
+    }
     @memcpy(word as ref void, @ptradd(content, ws), wl as usize)
     @store8(@ptradd(word, wl), 0)
 
@@ -1311,9 +1720,15 @@ pub fn handle_hover(
             write_response(str.cstr(built))
             str.string_free(built)
             str.StringBuilder.free(sb)
-            if word         != none { @free(word         as ref void) }
-            if file_path    != none { @free(file_path    as ref void) }
-            if module_alias != none { @free(module_alias as ref void) }
+            if word         != none {
+                @free(word         as ref void)
+            }
+            if file_path    != none {
+                @free(file_path    as ref void)
+            }
+            if module_alias != none {
+                @free(module_alias as ref void)
+            }
             return
         }
 
@@ -1332,9 +1747,15 @@ pub fn handle_hover(
             str.string_free(built)
             str.StringBuilder.free(sb)
             @free(local_decl as ref void)
-            if word         != none { @free(word         as ref void) }
-            if file_path    != none { @free(file_path    as ref void) }
-            if module_alias != none { @free(module_alias as ref void) }
+            if word         != none {
+                @free(word         as ref void)
+            }
+            if file_path    != none {
+                @free(file_path    as ref void)
+            }
+            if module_alias != none {
+                @free(module_alias as ref void)
+            }
             return
         }
 
@@ -1353,9 +1774,15 @@ pub fn handle_hover(
             str.string_free(built)
             str.StringBuilder.free(sb)
             @free(global_decl as ref void)
-            if word         != none { @free(word         as ref void) }
-            if file_path    != none { @free(file_path    as ref void) }
-            if module_alias != none { @free(module_alias as ref void) }
+            if word         != none {
+                @free(word         as ref void)
+            }
+            if file_path    != none {
+                @free(file_path    as ref void)
+            }
+            if module_alias != none {
+                @free(module_alias as ref void)
+            }
             return
         }
     }
@@ -1373,17 +1800,29 @@ pub fn handle_hover(
         write_response(str.cstr(built))
         str.string_free(built)
         str.StringBuilder.free(sb)
-        if file_path    != none { @free(file_path    as ref void) }
-        if word         != none { @free(word         as ref void) }
-        if module_alias != none { @free(module_alias as ref void) }
+        if file_path    != none {
+            @free(file_path    as ref void)
+        }
+        if word         != none {
+            @free(word         as ref void)
+        }
+        if module_alias != none {
+            @free(module_alias as ref void)
+        }
         return
     }
 
-    if word         != none { @free(word         as ref void) }
-    if module_alias != none { @free(module_alias as ref void) }
+    if word         != none {
+        @free(word         as ref void)
+    }
+    if module_alias != none {
+        @free(module_alias as ref void)
+    }
 
     if sym == none {
-        if file_path != none { @free(file_path as ref void) }
+        if file_path != none {
+            @free(file_path as ref void)
+        }
         send_null_result(id_raw)
         return
     }
@@ -1414,7 +1853,9 @@ pub fn handle_hover(
     write_response(str.cstr(built))
     str.string_free(built)
     str.StringBuilder.free(sb)
-    if file_path != none { @free(file_path as ref void) }
+    if file_path != none {
+        @free(file_path as ref void)
+    }
 }
 
 pub fn handle_definition(
@@ -1423,29 +1864,40 @@ pub fn handle_definition(
     id_raw: ref void,
     params: ref void
 ) void = trust {
-    if params == none { send_null_result(id_raw) return }
-    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    if params == none {
+        send_null_result(id_raw) return
+    }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
     val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    if td_obj == none || pos_obj == none {
+        send_null_result(id_raw) return
+    }
     val uri: ref u8 = get_str_field(td_obj, "uri")
-    val line: i64   = get_int_field(pos_obj, "line")
-    val col: i64    = get_int_field(pos_obj, "character")
-    if uri == none { send_null_result(id_raw) return }
+    val line: i64 = get_int_field(pos_obj, "line")
+    val col: i64 = get_int_field(pos_obj, "character")
+    if uri == none {
+        send_null_result(id_raw) return
+    }
 
     val content: mut ref u8 = none
-    match coll.StringMap.get(doc_store, uri) {
-        some v => { content = @bitcast(v, ref void) as ref u8 }
-        none   => {}
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
     }
-    if content == none { send_null_result(id_raw) return }
+    if content == none {
+        send_null_result(id_raw) return
+    }
 
     val ws: mut i64 = -1
     val wl: mut i64 = 0
     parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
-    if ws < 0 || wl <= 0 { send_null_result(id_raw) return }
+    if ws < 0 || wl <= 0 {
+        send_null_result(id_raw) return
+    }
 
     val word: ref u8 = @alloc(wl + 1) as ref u8
-    if word == none { send_null_result(id_raw) return }
+    if word == none {
+        send_null_result(id_raw) return
+    }
     @memcpy(word as ref void, @ptradd(content, ws), wl as usize)
     @store8(@ptradd(word, wl), 0)
 
@@ -1466,11 +1918,19 @@ pub fn handle_definition(
     val sym: ref parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, word, module_alias
     )
-    if file_path    != none { @free(file_path    as ref void) }
-    if word         != none { @free(word         as ref void) }
-    if module_alias != none { @free(module_alias as ref void) }
+    if file_path    != none {
+        @free(file_path    as ref void)
+    }
+    if word         != none {
+        @free(word         as ref void)
+    }
+    if module_alias != none {
+        @free(module_alias as ref void)
+    }
 
-    if sym == none { send_null_result(id_raw) return }
+    if sym == none {
+        send_null_result(id_raw) return
+    }
 
     val def_uri: mut ref u8 = none
     if sym.file != none {
@@ -1478,7 +1938,9 @@ pub fn handle_definition(
     } else {
         def_uri = raw_dup_cstr_h(uri)
     }
-    if def_uri == none { send_null_result(id_raw) return }
+    if def_uri == none {
+        send_null_result(id_raw) return
+    }
 
     val name_len: i64 = str.len_raw(sym.name)
     val sb: str.StringBuilder = str.StringBuilder.new()
@@ -1501,16 +1963,21 @@ pub fn handle_document_symbol(
     id_raw: ref void,
     params: ref void
 ) void = trust {
-    if params == none { send_null_result(id_raw) return }
+    if params == none {
+        send_null_result(id_raw) return
+    }
     val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none { send_null_result(id_raw) return }
+    if td_obj == none {
+        send_null_result(id_raw) return
+    }
     val uri: ref u8 = get_str_field(td_obj, "uri")
-    if uri == none { send_null_result(id_raw) return }
+    if uri == none {
+        send_null_result(id_raw) return
+    }
 
     val sym_list: mut ref void = none
-    match coll.StringMap.get(sym_store, uri) {
-        some v => { sym_list = @bitcast(v, ref void) }
-        none   => {}
+    if coll.StringMap.get(sym_store, uri) is some v {
+        sym_list = @bitcast(v, ref void)
     }
 
     val sb: str.StringBuilder = str.StringBuilder.new()
@@ -1522,41 +1989,42 @@ pub fn handle_document_symbol(
         val i: mut usize = 0
         val first: mut i64 = 1
         for {
-            if i >= n { break }
-            match coll.PtrList.get(sym_list, i) {
-                some v => {
-                    val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-                    if sym != none && sym.name != none {
-                        if first == 0 { str.StringBuilder.append_cstr(sb, ",") }
-                        first = 0
-                        val lsp_kind: i64 = sym_kind_to_lsp(sym.kind)
-                        val nl: i64 = str.len_raw(sym.name)
-                        str.StringBuilder.append_cstr(sb, "{\"name\":\"")
-                        sb_escape(sb, sym.name)
-                        if sym.receiver != none {
-                            str.StringBuilder.append_cstr(sb, " (")
-                            sb_escape(sb, sym.receiver)
-                            str.StringBuilder.append_cstr(sb, ")")
-                        }
-                        str.StringBuilder.append_cstr(sb, "\",\"kind\":")
-                        sb_append_int(sb, lsp_kind)
-                        str.StringBuilder.append_cstr(sb, ",\"range\":")
-                        append_range(sb, sym.line, 0, nl + 20)
-                        str.StringBuilder.append_cstr(sb, ",\"selectionRange\":")
-                        append_range(sb, sym.line, sym.col, sym.col + nl)
-                        if sym.doc != none && str.len_raw(sym.doc) > 0 {
-                            val dl: ref u8 = first_line_dup(sym.doc)
-                            if dl != none {
-                                str.StringBuilder.append_cstr(sb, ",\"detail\":\"")
-                                sb_escape(sb, dl)
-                                str.StringBuilder.append_cstr(sb, "\"")
-                                @free(dl as ref void)
-                            }
-                        }
-                        str.StringBuilder.append_cstr(sb, "}")
+            if i >= n {
+                break
+            }
+            if coll.PtrList.get(sym_list, i) is some v {
+                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                if sym != none && sym.name != none {
+                    if first == 0 {
+                        str.StringBuilder.append_cstr(sb, ",")
                     }
+                    first = 0
+                    val lsp_kind: i64 = sym_kind_to_lsp(sym.kind)
+                    val nl: i64 = str.len_raw(sym.name)
+                    str.StringBuilder.append_cstr(sb, "{\"name\":\"")
+                    sb_escape(sb, sym.name)
+                    if sym.receiver != none {
+                        str.StringBuilder.append_cstr(sb, " (")
+                        sb_escape(sb, sym.receiver)
+                        str.StringBuilder.append_cstr(sb, ")")
+                    }
+                    str.StringBuilder.append_cstr(sb, "\",\"kind\":")
+                    sb_append_int(sb, lsp_kind)
+                    str.StringBuilder.append_cstr(sb, ",\"range\":")
+                    append_range(sb, sym.line, 0, nl + 20)
+                    str.StringBuilder.append_cstr(sb, ",\"selectionRange\":")
+                    append_range(sb, sym.line, sym.col, sym.col + nl)
+                    if sym.doc != none && str.len_raw(sym.doc) > 0 {
+                        val dl: ref u8 = first_line_dup(sym.doc)
+                        if dl != none {
+                            str.StringBuilder.append_cstr(sb, ",\"detail\":\"")
+                            sb_escape(sb, dl)
+                            str.StringBuilder.append_cstr(sb, "\"")
+                            @free(dl as ref void)
+                        }
+                    }
+                    str.StringBuilder.append_cstr(sb, "}")
                 }
-                none => {}
             }
             i++
         }
@@ -1575,24 +2043,33 @@ pub fn handle_signature_help(
     id_raw: ref void,
     params: ref void
 ) void = trust {
-    if params == none { send_null_result(id_raw) return }
-    val td_obj:  ref void = get_obj_field(params, "textDocument")
+    if params == none {
+        send_null_result(id_raw) return
+    }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
     val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none { send_null_result(id_raw) return }
+    if td_obj == none || pos_obj == none {
+        send_null_result(id_raw) return
+    }
     val uri: ref u8 = get_str_field(td_obj, "uri")
-    val line: i64   = get_int_field(pos_obj, "line")
-    val col: i64    = get_int_field(pos_obj, "character")
-    if uri == none { send_null_result(id_raw) return }
+    val line: i64 = get_int_field(pos_obj, "line")
+    val col: i64 = get_int_field(pos_obj, "character")
+    if uri == none {
+        send_null_result(id_raw) return
+    }
 
     val content: mut ref u8 = none
-    match coll.StringMap.get(doc_store, uri) {
-        some v => { content = @bitcast(v, ref void) as ref u8 }
-        none   => {}
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
     }
-    if content == none { send_null_result(id_raw) return }
+    if content == none {
+        send_null_result(id_raw) return
+    }
 
     val ctx_mem: ref void = @alloc(16)
-    if ctx_mem == none { send_null_result(id_raw) return }
+    if ctx_mem == none {
+        send_null_result(id_raw) return
+    }
     @memset(ctx_mem, 0, 16)
     val ctx: mut ref parser.CallContext = ctx_mem as ref parser.CallContext
     parser.find_active_call(content, line, col, ctx)
@@ -1607,14 +2084,20 @@ pub fn handle_signature_help(
     val sym: ref parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, ctx.fn_name, none
     )
-    if file_path != none { @free(file_path as ref void) }
+    if file_path != none {
+        @free(file_path as ref void)
+    }
     val active_param: i64 = ctx.param_idx
     @free(ctx_mem)
 
-    if sym == none { send_null_result(id_raw) return }
+    if sym == none {
+        send_null_result(id_raw) return
+    }
 
     val sig_label: mut ref u8 = sym.name
-    if sym.signature != none { sig_label = sym.signature }
+    if sym.signature != none {
+        sig_label = sym.signature
+    }
 
     val sb: str.StringBuilder = str.StringBuilder.new()
     make_base(sb, id_raw)
@@ -1633,8 +2116,12 @@ pub fn handle_signature_help(
         val n: usize = coll.PtrList.len(sym.params)
         val i: mut usize = 0
         for {
-            if i >= n { break }
-            if i > 0 { str.StringBuilder.append_cstr(sb, ",") }
+            if i >= n {
+                break
+            }
+            if i > 0 {
+                str.StringBuilder.append_cstr(sb, ",")
+            }
             match coll.PtrList.get(sym.params, i) {
                 some v => {
                     val pstr: ref u8 = @bitcast(v, ref void) as ref u8
@@ -1666,16 +2153,19 @@ pub fn update_document(
     uri: ref u8,
     text: ref u8
 ) void = trust {
-    if uri == none || text == none { return }
+    if uri == none || text == none {
+        return
+    }
     val text_copy: ref u8 = raw_dup_cstr_h(text)
-    if text_copy == none { return }
+    if text_copy == none {
+        return
+    }
 
-    match coll.StringMap.get(doc_store, uri) {
-        some old_v => {
-            val old: ref u8 = @bitcast(old_v, ref void) as ref u8
-            if old != none { @free(old as ref void) }
+    if coll.StringMap.get(doc_store, uri) is some old_v {
+        val old: ref u8 = @bitcast(old_v, ref void) as ref u8
+        if old != none {
+            @free(old as ref void)
         }
-        none => {}
     }
 
     val alloc: allocators.HeapAllocator = @zeroed
@@ -1683,17 +2173,18 @@ pub fn update_document(
     val tv: usize = @bitcast(text_copy as ref void, usize)
     coll.StringMap.set[allocators.HeapAllocator](alloc, doc_store, uri, tv)
 
-    match coll.StringMap.get(sym_store, uri) {
-        some old_v => {
-            val old_syms: mut ref void = @bitcast(old_v, ref void)
-            if old_syms != none { parser.free_sym_list(old_syms) }
+    if coll.StringMap.get(sym_store, uri) is some old_v {
+        val old_syms: mut ref void = @bitcast(old_v, ref void)
+        if old_syms != none {
+            parser.free_sym_list(old_syms)
         }
-        none => {}
     }
 
     val file_path: ref u8 = parser.uri_to_path(uri)
-    val syms: ref void    = parser.parse_file(file_path, text_copy)
-    if file_path != none { @free(file_path as ref void) }
+    val syms: ref void = parser.parse_file(file_path, text_copy)
+    if file_path != none {
+        @free(file_path as ref void)
+    }
 
     if syms != none {
         val sv: usize = @bitcast(syms, usize)
@@ -1707,12 +2198,18 @@ pub fn handle_did_open(
     sym_store: mut ref void,
     params: ref void
 ) void = trust {
-    if params == none { return }
+    if params == none {
+        return
+    }
     val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none { return }
-    val uri:  ref u8 = get_str_field(td_obj, "uri")
+    if td_obj == none {
+        return
+    }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
     val text: ref u8 = get_str_field(td_obj, "text")
-    if uri == none || text == none { return }
+    if uri == none || text == none {
+        return
+    }
     update_document(doc_store, sym_store, uri, text)
 }
 
@@ -1721,27 +2218,37 @@ pub fn handle_did_change(
     sym_store: mut ref void,
     params: ref void
 ) void = trust {
-    if params == none { return }
+    if params == none {
+        return
+    }
     val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none { return }
+    if td_obj == none {
+        return
+    }
     val uri: ref u8 = get_str_field(td_obj, "uri")
-    if uri == none { return }
+    if uri == none {
+        return
+    }
 
     val changes: mut ref void = none
-    match json.obj_get(params, "contentChanges") {
-        some v => { if json.val_is_array(v) { changes = v } }
-        none   => {}
+    if json.obj_get(params, "contentChanges") is some v {
+        if json.val_is_array(v) {
+            changes = v
+        }
     }
-    if changes == none { return }
+    if changes == none {
+        return
+    }
 
     val last_idx: usize = json.arr_len(changes)
-    if last_idx == 0 { return }
-    match json.arr_get(changes, last_idx - 1) {
-        some ch => {
-            val text: ref u8 = get_str_field(ch, "text")
-            if text != none { update_document(doc_store, sym_store, uri, text) }
+    if last_idx == 0 {
+        return
+    }
+    if json.arr_get(changes, last_idx - 1) is some ch {
+        val text: ref u8 = get_str_field(ch, "text")
+        if text != none {
+            update_document(doc_store, sym_store, uri, text)
         }
-        none => {}
     }
 }
 
@@ -1752,26 +2259,30 @@ pub fn dispatch(
 ) void = trust {
     val doc_opt = json.parse(msg)
     match doc_opt {
-        none => { return }
+        none => {
+            return
+        }
         some doc => {
             val root: ref void = json.doc_root(doc)
 
             val method: mut ref u8 = none
             match json.obj_get_str(root, "method") {
-                some m => { method = m }
-                none   => { json.doc_free(doc) return }
+                some m => {
+                    method = m
+                }
+                none   => {
+                    json.doc_free(doc) return
+                }
             }
 
             val id_raw: mut ref void = none
-            match json.obj_get(root, "id") {
-                some v => { id_raw = v }
-                none   => {}
+            if json.obj_get(root, "id") is some v {
+                id_raw = v
             }
 
             val params: mut ref void = none
-            match json.obj_get(root, "params") {
-                some p => { params = p }
-                none   => {}
+            if json.obj_get(root, "params") is some p {
+                params = p
             }
 
             val mlen: i64 = str.len_raw(method)
@@ -1802,10 +2313,7 @@ pub fn dispatch(
 }
 
 pub fn handle_completion(
-    //doc_store: mut ref void,
-    //sym_store: mut ref void,
     id_raw: ref void,
-    //params: ref void
 ) void = trust {
     val sb: str.StringBuilder = str.StringBuilder.new()
     make_base(sb, id_raw)

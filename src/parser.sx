@@ -773,7 +773,7 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
         }
 
         val parent: ref u8 = path_dirname(dir)
-        val same: bool = (str.rchar_cmp(parent, dir) == 0)
+        val same: bool = (str.raw_cmp(parent, dir) == 0)
         @free(dir as ref void)
         if same { @free(parent as ref void) break }
         dir = parent
