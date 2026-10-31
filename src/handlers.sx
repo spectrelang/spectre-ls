@@ -245,12 +245,12 @@ pub fn handle_initialize(id_raw: ref void) void = trust {
     str.StringBuilder.append_cstr(sb, "\"documentSymbolProvider\":true,")
     str.StringBuilder.append_cstr(sb, "\"signatureHelpProvider\":{")
     str.StringBuilder.append_cstr(sb, "\"triggerCharacters\":[\"(\",\",\"]")
-    str.StringBuilder.append_cstr(sb, "}},")
+    str.StringBuilder.append_cstr(sb, "},")
 
     str.StringBuilder.append_cstr(sb, "\"completionProvider\":{")
     str.StringBuilder.append_cstr(sb, "\"resolveProvider\":false,")
     str.StringBuilder.append_cstr(sb, "\"triggerCharacters\":[\".\",\":\",\">\"]")
-    str.StringBuilder.append_cstr(sb, "},")
+    str.StringBuilder.append_cstr(sb, "}},")
 
     str.StringBuilder.append_cstr(sb, "\"serverInfo\":{\"name\":\"spectre-ls\",\"version\":\"0.1.0\"}")
     str.StringBuilder.append_cstr(sb, "}}")
