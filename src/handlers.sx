@@ -1058,6 +1058,229 @@ fn append_keyword_hover_contents(sb: str.StringBuilder, word: ref u8) void = tru
     sb_escape(sb, keyword_description(word))
 }
 
+pub fn intrinsic_signature(word: ref u8) ref u8 = {
+    if word == none {
+        return none
+    }
+    if str.raw_cmp(word, "fmt") == 0 {
+        return "@fmt(format: ref u8, args: untyped) ref u8"
+    }
+    if str.raw_cmp(word, "len") == 0 {
+        return "@len(list: list[T]) usize"
+    }
+    if str.raw_cmp(word, "addr") == 0 {
+        return "@addr(value: T) ref T"
+    }
+    if str.raw_cmp(word, "deref") == 0 {
+        return "@deref(ptr: ref T) T"
+    }
+    if str.raw_cmp(word, "alloc") == 0 {
+        return "@alloc(size: usize) ref void"
+    }
+    if str.raw_cmp(word, "free") == 0 {
+        return "@free(ptr: ref void) void"
+    }
+    if str.raw_cmp(word, "memcpy") == 0 {
+        return "@memcpy(dst: ref void, src: ref void, n: usize) void"
+    }
+    if str.raw_cmp(word, "memset") == 0 {
+        return "@memset(dst: ref void, value: u8, n: usize) void"
+    }
+    if str.raw_cmp(word, "memmove") == 0 {
+        return "@memmove(dst: ref void, src: ref void, n: usize) void"
+    }
+    if str.raw_cmp(word, "puts") == 0 {
+        return "@puts(s: ref u8) i32"
+    }
+    if str.raw_cmp(word, "print") == 0 {
+        return "@print(format: ref u8, args: untyped) i32"
+    }
+    if str.raw_cmp(word, "zeroed") == 0 {
+        return "@zeroed  |  @zeroed()"
+    }
+    if str.raw_cmp(word, "args") == 0 {
+        return "@args() list[ref u8]"
+    }
+    if str.raw_cmp(word, "bitcast") == 0 {
+        return "@bitcast(value: T, TargetType) TargetType"
+    }
+    if str.raw_cmp(word, "load") == 0 {
+        return "@load(ptr: ref T) T"
+    }
+    if str.raw_cmp(word, "load8") == 0 {
+        return "@load8(ptr: ref u8) u8"
+    }
+    if str.raw_cmp(word, "call") == 0 {
+        return "@call(fn: ref fn, args: untyped) T"
+    }
+    if str.raw_cmp(word, "snprintf") == 0 {
+        return "@snprintf(buf: ref u8, size: usize, format: ref u8, args: untyped) i32"
+    }
+    if str.raw_cmp(word, "dprintf") == 0 {
+        return "@dprintf(fd: i32, format: ref u8, args: untyped) i32"
+    }
+    if str.raw_cmp(word, "reserve") == 0 {
+        return "@reserve(list: list[T], capacity: usize) void"
+    }
+    if str.raw_cmp(word, "get") == 0 {
+        return "@get(container: list[T], index: usize) option[T]"
+    }
+    if str.raw_cmp(word, "insert") == 0 {
+        return "@insert(list: list[T], index: usize, value: T) void"
+    }
+    if str.raw_cmp(word, "capacity") == 0 {
+        return "@capacity(list: list[T]) usize"
+    }
+    if str.raw_cmp(word, "ptradd") == 0 {
+        return "@ptradd(ptr: ref T, offset: i64) ref T"
+    }
+    if str.raw_cmp(word, "store") == 0 {
+        return "@store(ptr: ref T, value: T) void"
+    }
+    if str.raw_cmp(word, "store8") == 0 {
+        return "@store8(ptr: ref u8, value: u8) void"
+    }
+    if str.raw_cmp(word, "staticerror") == 0 {
+        return "@staticerror(message: ref u8) void"
+    }
+    if str.raw_cmp(word, "flush") == 0 {
+        return "@flush() void"
+    }
+    if str.raw_cmp(word, "stdin") == 0 {
+        return "@stdin() ref void"
+    }
+    if str.raw_cmp(word, "stdout") == 0 {
+        return "@stdout() ref void"
+    }
+    if str.raw_cmp(word, "fgets") == 0 {
+        return "@fgets(buf: ref u8, size: i32, stream: ref void) ref u8"
+    }
+    if str.raw_cmp(word, "atoi") == 0 {
+        return "@atoi(s: ref u8) i64"
+    }
+    if str.raw_cmp(word, "itoa") == 0 {
+        return "@itoa(value: i64) ref u8"
+    }
+    return none
+}
+
+pub fn intrinsic_description(word: ref u8) ref u8 = {
+    if word == none {
+        return none
+    }
+    if str.raw_cmp(word, "fmt") == 0 {
+        return "Formats a string and returns it as a newly heap-allocated `ref u8`. Takes a format string and an untyped argument pack. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "len") == 0 {
+        return "Returns the number of elements in a `list[T]`."
+    }
+    if str.raw_cmp(word, "addr") == 0 {
+        return "Returns the address of a value as a pointer. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "deref") == 0 {
+        return "Dereferences a pointer and returns the value it points to. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "alloc") == 0 {
+        return "Allocates `size` bytes of heap memory and returns an untyped pointer. Cast the result to the required pointer type."
+    }
+    if str.raw_cmp(word, "free") == 0 {
+        return "Frees memory previously returned by `@alloc` or `@realloc`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "memcpy") == 0 {
+        return "Copies `n` bytes from `src` to `dst`. The regions must not overlap; use `@memmove` for overlapping memory. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "memset") == 0 {
+        return "Fills `n` bytes starting at `dst` with `value`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "memmove") == 0 {
+        return "Copies `n` bytes from `src` to `dst`, safely handling overlapping memory. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "puts") == 0 {
+        return "Writes a null-terminated string to stdout followed by a newline."
+    }
+    if str.raw_cmp(word, "print") == 0 {
+        return "Prints a formatted string to stdout. Takes a format string and an untyped argument pack. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "zeroed") == 0 {
+        return "Creates a zero-initialized value of the expected type. Useful for structs and fixed-size arrays; the type is inferred from context."
+    }
+    if str.raw_cmp(word, "args") == 0 {
+        return "Returns the command-line arguments as a `list[ref u8]`."
+    }
+    if str.raw_cmp(word, "bitcast") == 0 {
+        return "Reinterprets `value` as `TargetType` without conversion. Syntax: `@bitcast(value, TargetType)`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "load") == 0 {
+        return "Loads a word (pointer-sized value) from `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "load8") == 0 {
+        return "Loads a single byte from `ptr` and zero-extends it. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "call") == 0 {
+        return "Calls the function pointer `fn` with the supplied arguments. This intrinsic is variadic and returns the function's return type."
+    }
+    if str.raw_cmp(word, "snprintf") == 0 {
+        return "Formats output into `buf` with a maximum size of `size` bytes, like C `snprintf`. Returns the number of characters that would have been written."
+    }
+    if str.raw_cmp(word, "dprintf") == 0 {
+        return "Writes formatted output to the file descriptor `fd`, like C `dprintf`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "reserve") == 0 {
+        return "Reserves capacity for at least `capacity` elements in a `list[T]`."
+    }
+    if str.raw_cmp(word, "get") == 0 {
+        return "Returns `some value` when `index` is in bounds, otherwise `none`. Also supports indexing into fixed-size arrays. Returns `option[T]`."
+    }
+    if str.raw_cmp(word, "insert") == 0 {
+        return "Inserts `value` at `index` in a `list[T]`, shifting later elements."
+    }
+    if str.raw_cmp(word, "capacity") == 0 {
+        return "Returns the current capacity of a `list[T]`."
+    }
+    if str.raw_cmp(word, "ptradd") == 0 {
+        return "Adds a byte `offset` to a pointer and returns the resulting pointer. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "store") == 0 {
+        return "Stores a word (pointer-sized value) at `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "store8") == 0 {
+        return "Stores a single byte at `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
+    }
+    if str.raw_cmp(word, "staticerror") == 0 {
+        return "Triggers a compile-time error with the given message. Typically used inside `when` blocks; elsewhere it is a no-op."
+    }
+    if str.raw_cmp(word, "flush") == 0 {
+        return "Flushes stdout."
+    }
+    if str.raw_cmp(word, "stdin") == 0 {
+        return "Returns the standard input stream."
+    }
+    if str.raw_cmp(word, "stdout") == 0 {
+        return "Returns the standard output stream."
+    }
+    if str.raw_cmp(word, "fgets") == 0 {
+        return "Reads at most `size - 1` bytes from `stream` into `buf`, like C `fgets`. Returns `buf`, or `none` on EOF/error."
+    }
+    if str.raw_cmp(word, "atoi") == 0 {
+        return "Converts a null-terminated ASCII string to an integer."
+    }
+    if str.raw_cmp(word, "itoa") == 0 {
+        return "Converts an integer to its ASCII string representation."
+    }
+    return none
+}
+
+pub fn is_intrinsic_word(word: ref u8) bool = {
+    return intrinsic_signature(word) != none
+}
+
+fn append_intrinsic_hover_contents(sb: str.StringBuilder, word: ref u8) void = trust {
+    str.StringBuilder.append_cstr(sb, "```spectre\\n")
+    sb_escape(sb, intrinsic_signature(word))
+    str.StringBuilder.append_cstr(sb, "\\n```\\n\\n")
+    sb_escape(sb, intrinsic_description(word))
+}
+
 fn strip_type_wrappers(s: ref u8) ref u8 = trust {
     if s == none {
         return none
@@ -2988,6 +3211,18 @@ fn resolve_chain_type_symbol(
     return current
 }
 
+fn send_intrinsic_hover(id_raw: ref void, word: ref u8) void = trust {
+    val sb: str.StringBuilder = str.StringBuilder.new()
+    make_base(sb, id_raw)
+    str.StringBuilder.append_cstr(sb, ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"")
+    append_intrinsic_hover_contents(sb, word)
+    str.StringBuilder.append_cstr(sb, "\"}}}")
+    val built: mut str.String = str.StringBuilder.build(sb)
+    write_response(str.cstr(built))
+    str.string_free(built)
+    str.StringBuilder.free(sb)
+}
+
 fn send_field_hover(
     id_raw: ref void,
     field: ref parser.Symbol,
@@ -3053,7 +3288,12 @@ pub fn handle_hover(
     val wl: mut i64 = 0
     parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
     if ws < 0 || wl <= 0 {
-        send_null_result(id_raw) return
+        // Hovering directly on the '@' of an intrinsic: find the identifier
+        // immediately after it.
+        parser.find_word_at(content, line, col + 1, @addr(ws), @addr(wl))
+        if ws <= 0 || wl <= 0 || @load8(@ptradd(content, ws - 1)) != '@' {
+            send_null_result(id_raw) return
+        }
     }
 
     val word: ref u8 = @alloc(wl + 1) as ref u8
@@ -3062,6 +3302,12 @@ pub fn handle_hover(
     }
     @memcpy(word as ref void, @ptradd(content, ws), wl as usize)
     @store8(@ptradd(word, wl), 0)
+
+    if ws > 0 && @load8(@ptradd(content, ws - 1)) == '@' && is_intrinsic_word(word) {
+        send_intrinsic_hover(id_raw, word)
+        @free(word as ref void)
+        return
+    }
 
     val ms: mut i64 = -1
     val ml: mut i64 = 0

@@ -253,6 +253,22 @@ test {
 }
 
 test {
+    val names: list[ref u8] = [
+        "fmt", "len", "addr", "deref", "alloc", "free", "memcpy", "memset",
+        "memmove", "puts", "print", "zeroed", "args", "bitcast", "load",
+        "load8", "call", "snprintf", "dprintf", "reserve", "get", "insert",
+        "capacity", "ptradd", "store", "store8", "staticerror", "flush",
+        "stdin", "stdout", "fgets", "atoi", "itoa"
+    ]
+    for name in names {
+        assert(handlers.is_intrinsic_word(name))
+        assert(handlers.intrinsic_signature(name) != none)
+        assert(handlers.intrinsic_description(name) != none)
+    }
+    assert(!handlers.is_intrinsic_word("not_an_intrinsic"))
+}
+
+test {
     val decl: ref u8 = "val x_instance: mut X = @zeroed"
     val ty: ref u8 = trust handlers.decl_explicit_type(decl)
     assert(ty != none)
