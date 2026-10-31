@@ -11,6 +11,7 @@ pub val SYM_ENUM: i64 = 3
 pub val SYM_UNION: i64 = 4
 pub val SYM_VARIABLE: i64 = 5
 pub val SYM_MODULE: i64 = 6
+pub val SYM_FIELD: i64 = 7
 
 pub type Symbol = {
     name: mut ref u8
@@ -45,22 +46,22 @@ pub fn sym_free(s: mut ref Symbol, alloc: allocators.HeapAllocator) void = trust
         return
     }
     if s.name     != none {
-        @free(s.name      as ref void)
+        @free(s.name as ref void)
     }
     if s.receiver != none {
-        @free(s.receiver  as ref void)
+        @free(s.receiver as ref void)
     }
     if s.signature!= none {
         @free(s.signature as ref void)
     }
     if s.doc      != none {
-        @free(s.doc       as ref void)
+        @free(s.doc as ref void)
     }
     if s.file     != none {
-        @free(s.file      as ref void)
+        @free(s.file as ref void)
     }
     if s.ret_type != none {
-        @free(s.ret_type  as ref void)
+        @free(s.ret_type as ref void)
     }
     if s.params   != none {
         coll.PtrList.free[_](alloc, s.params)
@@ -85,8 +86,7 @@ pub fn free_sym_list(list: mut ref void) void = trust {
         }
         i++
     }
-    //coll.PtrList.free[?](alloc, list)
-    coll.PtrList.free[allocators.HeapAllocator](alloc, list)
+    coll.PtrList.free[_](alloc, list)
 }
 
 fn raw_dup(s: ref u8, len: i64) ref u8 = trust {
@@ -198,11 +198,10 @@ fn trim_right_len(s: ref u8, len: i64) i64 = trust {
 fn parse_params(params: ref u8, params_len: i64) ref void = trust {
     val list: mut ref void = none
     val alloc: allocators.HeapAllocator = @zeroed
-    //val list_res = coll.PtrList.new[?](alloc, 8 as usize)
-    val list_res = coll.PtrList.new[allocators.HeapAllocator](alloc, 8 as usize)
+    val list_res = coll.PtrList.new[_](alloc, 8 as usize)
 
     match list_res {
-        ok l  => {
+        ok l => {
             list = l
         }
         err _ => {
@@ -267,8 +266,7 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
                 val p: ref u8 = raw_dup(@ptradd(params, s), e - s)
                 if p != none {
                     val pv: usize = @bitcast(p as ref void, usize)
-                    //val pr = coll.PtrList.push[?](alloc, list, pv)
-                    val pr = coll.PtrList.push[allocators.HeapAllocator](alloc, list, pv)
+                    val pr = coll.PtrList.push[_](alloc, list, pv)
                     match pr {
                         ok _ => {}
                         err _ => {}
@@ -330,6 +328,7 @@ fn parse_fn_decl(
         sym_free(sym, alloc)
         return none
     }
+    sym.col = i
     sym.name = raw_dup(@ptradd(rest, i), name_len)
     i = i + name_len
 
@@ -438,7 +437,7 @@ fn parse_kw_decl(
     sym.name = raw_dup(@ptradd(rest, i), name_len)
     sym.kind = kind
     sym.line = line_num
-    sym.col = 0
+    sym.col = i
     sym.file = raw_dup_cstr(file)
     sym.doc = raw_dup_cstr(doc)
     val sig_len: i64 = trim_right_len(full_line, full_line_len)
@@ -456,6 +455,7 @@ fn parse_import_decl(
     if name_len == 0 {
         return none
     }
+    val alias_col: i64 = i
     val alias: ref u8 = raw_dup(@ptradd(line, i), name_len)
     i = i + name_len
     i = skip_ws(line, i, line_len)
@@ -486,7 +486,7 @@ fn parse_import_decl(
     sym.name = alias
     sym.kind = SYM_MODULE
     sym.line = line_num
-    sym.col = 0
+    sym.col = alias_col
     sym.file = raw_dup_cstr(file)
     sym.ret_type = path
     val sig_len: i64 = trim_right_len(line, line_len)
@@ -513,7 +513,7 @@ fn parse_val_decl(
     sym.name = raw_dup(@ptradd(line, i), name_len)
     sym.kind = SYM_VARIABLE
     sym.line = line_num
-    sym.col = 0
+    sym.col = i
     sym.file = raw_dup_cstr(file)
     sym.doc = raw_dup_cstr(doc)
     i = i + name_len
@@ -630,8 +630,7 @@ fn process_line(
 
     if sym != none {
         val sv: usize = @bitcast(sym as ref void, usize)
-        //val pr = coll.PtrList.push[?](alloc, syms, sv)
-        val pr = coll.PtrList.push[allocators.HeapAllocator](alloc, syms, sv)
+        val pr = coll.PtrList.push[_](alloc, syms, sv)
         match pr {
             ok _ => {}
             err _ => {
@@ -650,9 +649,8 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     val syms: mut ref void = none
     val alloc: allocators.HeapAllocator = @zeroed
 
-    //match coll.PtrList.new[?](alloc, 64 as usize) {
-    match coll.PtrList.new[allocators.HeapAllocator](alloc, 64 as usize) {
-        ok l  => {
+    match coll.PtrList.new[_](alloc, 64 as usize) {
+        ok l => {
             syms = l
         }
         err _ => {
@@ -732,7 +730,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
 
 pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, out_len: ref i64) void = trust {
     @store(out_start as ref void, -1 as i64)
-    @store(out_len   as ref void, 0  as i64)
+    @store(out_len as ref void, 0 as i64)
 
     val content_len: i64 = str.len_raw(content)
     if content_len == 0 {
@@ -756,17 +754,46 @@ pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, ou
     }
 
     val line_base: i64 = i
-    val char_pos: i64 = i + col
+    val line_end: mut i64 = i
+    for {
+        if line_end >= content_len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(content, line_end))
+        if c == '\n' || c == '\r' {
+            break
+        }
+        line_end = line_end + 1
+    }
 
-    if char_pos >= content_len {
+    val probe: mut i64 = i + col
+    if probe > line_end {
+        probe = line_end
+    }
+    if probe >= line_end && line_end > line_base {
+        probe = line_end - 1
+    }
+    if probe >= content_len {
+        probe = content_len - 1
+    }
+    if probe < line_base {
         return
     }
 
-    val at_c: u8 = @load8(@ptradd(content, char_pos))
+    // LSP clients commonly send the position just *after* the identifier
+    // (or on the dot/punctuation following it).  Looking only at the
+    // character under the cursor makes hover/definition feel random, so fall
+    // back to the identifier immediately to the left.
+    val at_c: u8 = @load8(@ptradd(content, probe))
     if !is_ident_cont(at_c) {
-        return
+        if probe > line_base && is_ident_cont(@load8(@ptradd(content, probe - 1))) {
+            probe = probe - 1
+        } else {
+            return
+        }
     }
 
+    val char_pos: i64 = probe
     val ws: mut i64 = char_pos
     for {
         if ws <= line_base {
@@ -790,12 +817,12 @@ pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, ou
     }
 
     @store(out_start as ref void, ws)
-    @store(out_len   as ref void, we - ws)
+    @store(out_len as ref void, we - ws)
 }
 
 pub fn find_dot_prefix(content: ref u8, word_start: i64, out_mod: ref i64, out_mod_len: ref i64) void = trust {
-    @store(out_mod     as ref void, -1 as i64)
-    @store(out_mod_len as ref void, 0  as i64)
+    @store(out_mod as ref void, -1 as i64)
+    @store(out_mod_len as ref void, 0 as i64)
 
     if word_start <= 0 {
         return
@@ -809,21 +836,334 @@ pub fn find_dot_prefix(content: ref u8, word_start: i64, out_mod: ref i64, out_m
     if me <= 0 {
         return
     }
-    val ms: mut i64 = me - 1
+
+    val ms: mut i64 = me
     for {
-        if ms <= 0 {
+        val seg_end: i64 = ms
+        for {
+            if ms <= 0 {
+                break
+            }
+            if !is_ident_cont(@load8(@ptradd(content, ms - 1))) {
+                break
+            }
+            ms = ms - 1
+        }
+        if ms == seg_end {
             break
         }
-        if !is_ident_cont(@load8(@ptradd(content, ms - 1))) {
+        if ms > 0 && @load8(@ptradd(content, ms - 1)) == '.' {
+            ms = ms - 1
+        } else {
             break
         }
-        ms = ms - 1
     }
     if me - ms <= 0 {
         return
     }
-    @store(out_mod     as ref void, ms)
+    @store(out_mod as ref void, ms)
     @store(out_mod_len as ref void, me - ms)
+}
+
+fn line_start_at(s: ref u8, idx: i64) i64 = trust {
+    val j: mut i64 = idx
+    for {
+        if j <= 0 {
+            break
+        }
+        if @load8(@ptradd(s, j - 1)) == '\n' {
+            break
+        }
+        j = j - 1
+    }
+    return j
+}
+
+fn newline_count_between(s: ref u8, start: i64, end: i64) i64 = trust {
+    val n: mut i64 = 0
+    val i: mut i64 = start
+    for {
+        if i >= end {
+            break
+        }
+        if @load8(@ptradd(s, i)) == '\n' {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+pub fn line_bounds_raw(content: ref u8, target_line: i64, out_start: ref i64, out_end: ref i64) void = trust {
+    @store(out_start as ref void, -1 as i64)
+    @store(out_end as ref void, -1 as i64)
+    if content == none || target_line < 0 {
+        return
+    }
+
+    val len: i64 = str.len_raw(content)
+    if len <= 0 {
+        return
+    }
+
+    val cur: mut i64 = 0
+    val i: mut i64 = 0
+    val start: mut i64 = 0
+    val found: mut i64 = 0
+    for {
+        if i > len {
+            break
+        }
+        if cur == target_line {
+            start = i
+            found = 1
+            break
+        }
+        if i >= len {
+            break
+        }
+        if @load8(@ptradd(content, i)) == '\n' {
+            cur = cur + 1
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if found == 0 {
+        return
+    }
+
+    val end: mut i64 = start
+    for {
+        if end >= len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(content, end))
+        if c == '\n' || c == '\r' {
+            break
+        }
+        end = end + 1
+    }
+    @store(out_start as ref void, start)
+    @store(out_end as ref void, end)
+}
+
+fn find_matching_close_raw(s: ref u8, len: i64, open_idx: i64, open_ch: u8, close_ch: u8) i64 = trust {
+    if s == none || open_idx < 0 || open_idx >= len {
+        return -1
+    }
+    val depth: mut i64 = 0
+    val i: mut i64 = open_idx
+    for {
+        if i >= len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(s, i))
+        if c == open_ch {
+            depth = depth + 1
+        } elif c == close_ch {
+            depth = depth - 1
+            if depth == 0 {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn make_field_sym(
+    name: ref u8, name_len: i64,
+    type_expr: ref u8, type_len: i64,
+    doc: ref u8, file: ref u8,
+    line: i64, col: i64
+) ref Symbol = trust {
+    val sym: mut ref Symbol = sym_alloc()
+    if sym == none {
+        return none
+    }
+    sym.name = raw_dup(name, name_len)
+    sym.kind = SYM_FIELD
+    sym.ret_type = raw_dup(type_expr, type_len)
+    sym.doc = raw_dup_cstr(doc)
+    sym.file = raw_dup_cstr(file)
+    sym.line = line
+    sym.col = col
+    return sym
+}
+
+/// Parse the fields of a struct-like `type Name = { ... }` declaration.
+/// `type_line` is the zero-based line on which the declaration starts (the
+/// line stored on the corresponding Symbol).  The returned list owns a
+/// `*Symbol` for every field; release it with `free_sym_list`.
+pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void = trust {
+    val alloc: allocators.HeapAllocator = @zeroed
+    val fields: mut ref void = none
+    match coll.PtrList.new[allocators.HeapAllocator](alloc, 8 as usize) {
+        ok l => {
+            fields = l
+        }
+        err _ => {
+            return none
+        }
+    }
+    if content == none || type_line < 0 {
+        return fields
+    }
+
+    val len: i64 = str.len_raw(content)
+    if len <= 0 {
+        return fields
+    }
+
+    val ls: mut i64 = -1
+    val le: mut i64 = -1
+    line_bounds_raw(content, type_line, @addr(ls), @addr(le))
+    if ls < 0 {
+        return fields
+    }
+
+    val open_idx: mut i64 = -1
+    val oi: mut i64 = ls
+    for {
+        if oi >= len {
+            break
+        }
+        if @load8(@ptradd(content, oi)) == '{' {
+            open_idx = oi
+            break
+        }
+        oi = oi + 1
+    }
+    if open_idx < 0 {
+        return fields
+    }
+
+    val close_idx: i64 = find_matching_close_raw(content, len, open_idx, '{', '}')
+    if close_idx <= open_idx {
+        return fields
+    }
+
+    val doc_buf: mut str.String = str.new()
+    val abs_line_start: mut i64 = line_start_at(content, open_idx)
+    val cur_line: mut i64 = type_line + newline_count_between(content, ls, open_idx)
+    val pos: mut i64 = open_idx + 1
+    val depth: mut i64 = 1
+
+    for {
+        if pos >= close_idx {
+            break
+        }
+
+        val line_end: mut i64 = pos
+        for {
+            if line_end >= len {
+                break
+            }
+            val c: u8 = @load8(@ptradd(content, line_end))
+            if c == '\n' || c == '\r' {
+                break
+            }
+            line_end = line_end + 1
+        }
+
+        val seg: ref u8 = @ptradd(content, pos)
+        val seg_len: i64 = line_end - pos
+        val lead: i64 = skip_ws(seg, 0, seg_len)
+        val trimmed: ref u8 = @ptradd(seg, lead)
+        val tlen: i64 = trim_right_len(trimmed, seg_len - lead)
+
+        val is_doc: bool = tlen >= 3 &&
+        @load8(@ptradd(trimmed, 0)) == '/' &&
+        @load8(@ptradd(trimmed, 1)) == '/' &&
+        @load8(@ptradd(trimmed, 2)) == '/'
+        val is_comment: bool = tlen >= 2 &&
+        @load8(@ptradd(trimmed, 0)) == '/' &&
+        @load8(@ptradd(trimmed, 1)) == '/'
+
+        if is_doc && depth == 1 {
+            val cs: mut i64 = 3
+            if tlen > 3 && @load8(@ptradd(trimmed, 3)) == ' ' {
+                cs = 4
+            }
+            if tlen > cs {
+                val part: ref u8 = raw_dup(@ptradd(trimmed, cs), tlen - cs)
+                if part != none {
+                    str.push_cstr(doc_buf, part)
+                    str.push_char(doc_buf, '\n')
+                    @free(part as ref void)
+                }
+            }
+        } elif !is_comment && tlen > 0 && depth == 1 {
+            val first: u8 = @load8(@ptradd(trimmed, 0))
+            if first != '}' && !starts_with_n(trimmed, tlen, "invariant", 9) {
+                val name_len: i64 = ident_len_at(trimmed, 0, tlen)
+                if name_len > 0 {
+                    val after_name: i64 = skip_ws(trimmed, name_len, tlen)
+                    if after_name < tlen && @load8(@ptradd(trimmed, after_name)) == ':' {
+                        val type_start: i64 = skip_ws(trimmed, after_name + 1, tlen)
+                        val type_len: i64 = trim_right_len(@ptradd(trimmed, type_start), tlen - type_start)
+                        if type_len > 0 {
+                            val field_doc: ref u8 = str.cstr(doc_buf)
+                            val field: mut ref Symbol = make_field_sym(
+                                trimmed, name_len,
+                                @ptradd(trimmed, type_start), type_len,
+                                field_doc, file, cur_line, pos + lead - abs_line_start
+                            )
+                            if field != none {
+                                val fv: usize = @bitcast(field as ref void, usize)
+                                match coll.PtrList.push[allocators.HeapAllocator](alloc, fields, fv) {
+                                    ok _ => {}
+                                    err _ => {
+                                        sym_free(field, alloc)
+                                    }
+                                }
+                            }
+                            str.clear(doc_buf)
+                        }
+                    }
+                }
+            }
+        } elif tlen > 0 && !is_doc {
+            str.clear(doc_buf)
+        }
+
+        if depth == 1 && tlen > 0 && starts_with_n(trimmed, tlen, "invariant", 9) {
+            str.clear(doc_buf)
+        }
+
+        val i: mut i64 = pos
+        for {
+            if i >= line_end {
+                break
+            }
+            val c: u8 = @load8(@ptradd(content, i))
+            if c == '{' {
+                depth = depth + 1
+            } elif c == '}' {
+                depth = depth - 1
+            }
+            i = i + 1
+        }
+        if depth <= 0 {
+            break
+        }
+
+        pos = line_end
+        if pos < len {
+            val c: u8 = @load8(@ptradd(content, pos))
+            if c == '\r' {
+                pos = pos + 1
+            }
+            if pos < len && @load8(@ptradd(content, pos)) == '\n' {
+                pos = pos + 1
+            }
+        }
+        abs_line_start = pos
+        cur_line = cur_line + 1
+    }
+
+    str.string_free(doc_buf)
+    return fields
 }
 
 pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref CallContext) void = trust {
@@ -1048,6 +1388,17 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     val dir: ref u8 = path_dirname(current_file)
     if dir == none {
         return none
+    }
+
+    if mlen > 3 && starts_with_n(@ptradd(mod_path, mlen - 3), 3, ".sx", 3) {
+        val direct: ref u8 = path_join(dir, mod_path)
+        if direct != none && os.exists(direct) {
+            @free(dir as ref void)
+            return direct
+        }
+        if direct != none {
+            @free(direct as ref void)
+        }
     }
 
     val sx_name: ref u8 = @alloc(mlen + 4) as ref u8

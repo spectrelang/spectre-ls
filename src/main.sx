@@ -3,6 +3,8 @@ val stdio      = use("std/stdio")
 val str        = use("std/string")
 val allocators = use("std/allocators")
 val handlers   = use("./handlers")
+val parser     = use("./parser")
+val json       = use("std/json")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
@@ -34,6 +36,26 @@ fn starts_with_main(s: ref u8, slen: i64, prefix: ref u8, plen: i64) bool = trus
     return strncmp(s, prefix, plen as usize) == 0
 }
 
+fn is_help_flag(arg: ref u8) bool = {
+    if arg == none {
+        return false
+    }
+    return str.raw_cmp(arg, "-h") == 0 || str.raw_cmp(arg, "--help") == 0
+}
+
+fn print_help() void = {
+    stdio.puts("spectre-ls - Spectre language server")
+    stdio.puts("")
+    stdio.puts("Usage:")
+    stdio.puts("  spectre-ls [options]")
+    stdio.puts("")
+    stdio.puts("Options:")
+    stdio.puts("  -h, --help    Show this help message and exit")
+    stdio.puts("")
+    stdio.puts("Without options, spectre-ls communicates over stdio using the")
+    stdio.puts("Language Server Protocol.")
+}
+
 fn read_message() option[ref u8] = trust {
     val line_buf: ref u8 = @alloc(4096) as ref u8
     if line_buf == none {
@@ -55,7 +77,7 @@ fn read_message() option[ref u8] = trust {
             break
         }
         if llen == 2 &&
-        @load8(line_buf             as ref void) == '\r' &&
+        @load8(line_buf as ref void) == '\r' &&
         @load8(@ptradd(line_buf, 1) as ref void) == '\n' {
             break
         }
@@ -105,6 +127,14 @@ fn read_message() option[ref u8] = trust {
 }
 
 pub fn main() void = trust {
+    val args = @args()
+    for arg in args {
+        if is_help_flag(arg) {
+            print_help()
+            return
+        }
+    }
+
     val ac: allocators.HeapAllocator = @zeroed
     g_doc_store = coll.StringMap.new[_](ac, 64 as usize)
     g_sym_store = coll.StringMap.new[_](ac, 64 as usize)
@@ -127,6 +157,182 @@ pub fn main() void = trust {
         }
     }
 
-    allocators.HeapAllocator.free(ac, g_doc_store)
-    allocators.HeapAllocator.free(ac, g_sym_store)
+    // The server exits immediately after this loop.  The language runtime and
+    // OS reclaim the remaining document/symbol storage; freeing the maps here
+    // is unsafe because they contain owned strings and symbol lists.
+}
+
+test {
+    val src: ref u8 = "val x_instance: X = @zeroed\nx_instance.x = 3\n"
+    val ws: mut i64 = -1
+    val wl: mut i64 = 0
+
+    // Cursor in the middle of a word.
+    trust parser.find_word_at(src, 0, 8, @addr(ws), @addr(wl))
+    assert(ws == 4)
+    assert(wl == 10)
+
+    // Cursor immediately after a word (common from editors) still resolves it.
+    trust parser.find_word_at(src, 0, 14, @addr(ws), @addr(wl))
+    assert(ws == 4)
+    assert(wl == 10)
+
+    // Cursor on the dot resolves the name on the left.
+    trust parser.find_word_at(src, 1, 10, @addr(ws), @addr(wl))
+    assert(ws == 28)
+    assert(wl == 10)
+
+    // Field name on the second line.
+    trust parser.find_word_at(src, 1, 11, @addr(ws), @addr(wl))
+    assert(ws == 39)
+    assert(wl == 1)
+}
+
+test {
+    val src: ref u8 = "outer.inner.z"
+    val ws: mut i64 = -1
+    val wl: mut i64 = 0
+    trust parser.find_word_at(src, 0, 12, @addr(ws), @addr(wl))
+    assert(ws == 12)
+    assert(wl == 1)
+
+    val ms: mut i64 = -1
+    val ml: mut i64 = 0
+    trust parser.find_dot_prefix(src, ws, @addr(ms), @addr(ml))
+    assert(ms == 0)
+    assert(ml == 11)
+
+    val src2: ref u8 = "m.Point"
+    trust parser.find_word_at(src2, 0, 3, @addr(ws), @addr(wl))
+    trust parser.find_dot_prefix(src2, ws, @addr(ms), @addr(ml))
+    assert(ms == 0)
+    assert(ml == 1)
+}
+
+test {
+    val content: ref u8 = "type Point = {\n    /// horizontal coordinate\n    x: i32\n    y: mut f64\n    invariant { x > 0 }\n}\n"
+
+    val fields: mut ref void = trust parser.parse_type_fields(content, "test.sx", 0)
+    assert(fields != none)
+    assert(coll.PtrList.len(fields) == 2)
+
+    match coll.PtrList.get(fields, 0 as usize) {
+        some v => {
+            val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
+            assert(str.raw_cmp(f.name, "x") == 0)
+            assert(str.raw_cmp(f.ret_type, "i32") == 0)
+            assert(f.line == 2)
+            assert(f.col == 4)
+            assert(f.doc != none)
+        }
+        none => {
+            assert(false)
+        }
+    }
+
+    match coll.PtrList.get(fields, 1 as usize) {
+        some v => {
+            val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
+            assert(str.raw_cmp(f.name, "y") == 0)
+            assert(str.raw_cmp(f.ret_type, "mut f64") == 0)
+        }
+        none => {
+            assert(false)
+        }
+    }
+    trust parser.free_sym_list(fields)
+}
+
+test {
+    assert(handlers.is_keyword("for"))
+    assert(handlers.is_keyword("fn"))
+    assert(handlers.is_keyword("type"))
+    assert(!handlers.is_keyword("x_instance"))
+    assert(handlers.keyword_description("for") != none)
+    assert(handlers.keyword_signature("fn") != none)
+}
+
+test {
+    val decl: ref u8 = "val x_instance: mut X = @zeroed"
+    val ty: ref u8 = trust handlers.decl_explicit_type(decl)
+    assert(ty != none)
+    assert(str.raw_cmp(ty, "mut X") == 0)
+    trust @free(ty as ref void)
+
+    val param: ref u8 = trust handlers.extract_param_type("value: ref u8")
+    assert(param != none)
+    assert(str.raw_cmp(param, "ref u8") == 0)
+    trust @free(param as ref void)
+
+    val inferred_decl: ref u8 = "val p = X.new()"
+    val init: ref u8 = trust handlers.decl_initializer(inferred_decl)
+    assert(init != none)
+    assert(str.raw_cmp(init, "X.new()") == 0)
+
+    val inferred: ref u8 = trust handlers.infer_expr_type_name(init)
+    assert(inferred != none)
+    assert(str.raw_cmp(inferred, "X.new") == 0)
+    trust @free(init as ref void)
+    trust @free(inferred as ref void)
+
+    val wrapped: ref u8 = trust handlers.infer_expr_type_name("some mod.Type.new(1, 2)")
+    assert(wrapped != none)
+    assert(str.raw_cmp(wrapped, "mod.Type.new") == 0)
+    trust @free(wrapped as ref void)
+}
+
+test {
+    val src: ref u8 = "    x_instance.\n    x_instance.x\n"
+    val start: mut i64 = -1
+    val end: mut i64 = -1
+    val has_dot: mut i64 = 0
+    val base_start: mut i64 = -1
+    val base_len: mut i64 = 0
+
+    trust handlers.find_completion_context(
+        src, 0, 15,
+        @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
+    )
+    assert(has_dot == 1)
+    assert(start == 15)
+    assert(end == 15)
+    assert(base_start == 4)
+    assert(base_len == 10)
+
+    trust handlers.find_completion_context(
+        src, 1, 16,
+        @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
+    )
+    assert(has_dot == 1)
+    assert(start == 31)
+    assert(end == 32)
+    assert(base_start == 20)
+    assert(base_len == 10)
+
+    trust handlers.find_completion_context(
+        src, 1, 7,
+        @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
+    )
+    assert(has_dot == 0)
+    assert(start == 20)
+    assert(end == 23)
+}
+
+test {
+    val doc = trust json.parse("{\"jsonrpc\":\"2.0\"}")
+    match doc {
+        some d => {
+            trust json.doc_free(d)
+        }
+        none => {
+            assert(false)
+        }
+    }
+}
+
+test {
+    assert(is_help_flag("-h"))
+    assert(is_help_flag("--help"))
+    assert(!is_help_flag("--version"))
+    assert(!is_help_flag(""))
 }
