@@ -575,9 +575,21 @@ fn process_line(
     val tlen: i64 = line_len - i
 
     if nesting_depth != 0 {
-        str.clear(doc_buf)
-        @store(has_doc as ref void, 0 as i64)
-        return
+        // Extern declarations are commonly wrapped in platform `when` blocks.
+        // Let those through even though the surrounding block is otherwise
+        // skipped.
+        val decl: mut ref u8 = trimmed
+        val dlen: mut i64 = tlen
+        if starts_with_n(decl, dlen, "pub ", 4) {
+            val poff: i64 = skip_ws(decl, 4, dlen)
+            decl = @ptradd(decl, poff)
+            dlen = dlen - poff
+        }
+        if !starts_with_n(decl, dlen, "extern ", 7) {
+            str.clear(doc_buf)
+            @store(has_doc as ref void, 0 as i64)
+            return
+        }
     }
 
     if tlen >= 3 &&
@@ -606,11 +618,47 @@ fn process_line(
     val sym: mut ref Symbol = none
     val rest: mut ref u8 = trimmed
     val rlen: mut i64 = tlen
+    val col_offset: mut i64 = i
 
     if starts_with_n(trimmed, tlen, "pub ", 4) {
         val off: i64 = skip_ws(trimmed, 4, tlen)
         rest = @ptradd(trimmed, off)
         rlen = tlen - off
+        col_offset = col_offset + off
+    }
+
+    // `extern [ABI] fn ...` and `extern type ...`.  The ABI part is optional
+    // for types, so skip it before dispatching on the declaration keyword.
+    if starts_with_n(rest, rlen, "extern ", 7) {
+        val eoff: i64 = skip_ws(rest, 7, rlen)
+        rest = @ptradd(rest, eoff)
+        rlen = rlen - eoff
+        col_offset = col_offset + eoff
+
+        if starts_with_n(rest, rlen, "(", 1) {
+            val depth: mut i64 = 0
+            val j: mut i64 = 0
+            for {
+                if j >= rlen {
+                    break
+                }
+                val c: u8 = @load8(@ptradd(rest, j))
+                if c == '(' {
+                    depth = depth + 1
+                } elif c == ')' {
+                    depth = depth - 1
+                    if depth == 0 {
+                        j = j + 1
+                        break
+                    }
+                }
+                j = j + 1
+            }
+            val aoff: i64 = skip_ws(rest, j, rlen)
+            rest = @ptradd(rest, aoff)
+            rlen = rlen - aoff
+            col_offset = col_offset + aoff
+        }
     }
 
     if starts_with_n(rest, rlen, "fn ", 3) {
@@ -629,6 +677,7 @@ fn process_line(
     }
 
     if sym != none {
+        sym.col = sym.col + col_offset
         val sv: usize = @bitcast(sym as ref void, usize)
         val pr = coll.PtrList.push[_](alloc, syms, sv)
         match pr {
@@ -1763,4 +1812,38 @@ test {
     assert str.raw_cmp(d4, ".") == 0
     assert str.raw_cmp(d5, ".") == 0
     assert str.raw_cmp(j1, "/a/b.sx") == 0
+}
+
+test {
+    val src: ref u8 = "/// strlen docs\nextern (C) fn strlen(s: ref u8) i64 = \"strlen\"\n\nextern type Rect = {\n    x: i32\n}\n\nwhen linux {\n    extern (C) fn uname(buf: ref Rect) i32 = \"uname\"\n}\n"
+    val syms: mut ref void = trust parse_file("extern_test.sx", src)
+    assert syms != none
+    assert coll.PtrList.len(syms) == 3
+
+    val saw_strlen: mut bool = false
+    val saw_rect: mut bool = false
+    val saw_uname: mut bool = false
+    val i: mut usize = 0
+    for {
+        if i >= coll.PtrList.len(syms) {
+            break
+        }
+        if coll.PtrList.get(syms, i) is some v {
+            val sym: ref Symbol = trust @bitcast(v, ref void) as ref Symbol
+            if str.raw_cmp(sym.name, "strlen") == 0 {
+                saw_strlen = sym.kind == SYM_FUNCTION && sym.col == 14
+            }
+            if str.raw_cmp(sym.name, "Rect") == 0 {
+                saw_rect = sym.kind == SYM_TYPE && sym.col == 12
+            }
+            if str.raw_cmp(sym.name, "uname") == 0 {
+                saw_uname = sym.kind == SYM_FUNCTION && sym.col == 18
+            }
+        }
+        i = i + 1
+    }
+    assert saw_strlen
+    assert saw_rect
+    assert saw_uname
+    trust free_sym_list(syms)
 }
