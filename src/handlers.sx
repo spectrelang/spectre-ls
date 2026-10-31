@@ -1921,13 +1921,13 @@ fn lookup_local_variable_decl(
     val start_slots: ref void = @alloc(slot_count * 8)
     val end_slots: ref void = @alloc(slot_count * 8)
     if line_slots == none || start_slots == none || end_slots == none {
-        if line_slots  != none {
+        if line_slots != none {
             @free(line_slots)
         }
         if start_slots != none {
             @free(start_slots)
         }
-        if end_slots   != none {
+        if end_slots != none {
             @free(end_slots)
         }
         return none
@@ -3497,10 +3497,10 @@ pub fn handle_hover(
             write_response(str.cstr(built))
             str.string_free(built)
             str.StringBuilder.free(sb)
-            if word         != none {
+            if word != none {
                 @free(word as ref void)
             }
-            if file_path    != none {
+            if file_path != none {
                 @free(file_path as ref void)
             }
             if module_alias != none {
@@ -3524,10 +3524,10 @@ pub fn handle_hover(
             str.string_free(built)
             str.StringBuilder.free(sb)
             @free(local_decl as ref void)
-            if word         != none {
+            if word != none {
                 @free(word as ref void)
             }
-            if file_path    != none {
+            if file_path != none {
                 @free(file_path as ref void)
             }
             if module_alias != none {
@@ -3551,10 +3551,10 @@ pub fn handle_hover(
             str.string_free(built)
             str.StringBuilder.free(sb)
             @free(global_decl as ref void)
-            if word         != none {
+            if word != none {
                 @free(word as ref void)
             }
-            if file_path    != none {
+            if file_path != none {
                 @free(file_path as ref void)
             }
             if module_alias != none {
@@ -3577,10 +3577,10 @@ pub fn handle_hover(
         write_response(str.cstr(built))
         str.string_free(built)
         str.StringBuilder.free(sb)
-        if file_path    != none {
+        if file_path != none {
             @free(file_path as ref void)
         }
-        if word         != none {
+        if word != none {
             @free(word as ref void)
         }
         if module_alias != none {
@@ -3589,7 +3589,7 @@ pub fn handle_hover(
         return
     }
 
-    if word         != none {
+    if word != none {
         @free(word as ref void)
     }
     if module_alias != none {
@@ -3910,10 +3910,10 @@ pub fn handle_definition(
     val sym: ref parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, word, module_alias
     )
-    if file_path    != none {
+    if file_path != none {
         @free(file_path as ref void)
     }
-    if word         != none {
+    if word != none {
         @free(word as ref void)
     }
     if module_alias != none {

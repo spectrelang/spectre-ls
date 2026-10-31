@@ -169,23 +169,23 @@ test {
 
     // Cursor in the middle of a word.
     trust parser.find_word_at(src, 0, 8, @addr(ws), @addr(wl))
-    assert(ws == 4)
-    assert(wl == 10)
+    assert ws == 4
+    assert wl == 10
 
     // Cursor immediately after a word (common from editors) still resolves it.
     trust parser.find_word_at(src, 0, 14, @addr(ws), @addr(wl))
-    assert(ws == 4)
-    assert(wl == 10)
+    assert ws == 4
+    assert wl == 10
 
     // Cursor on the dot resolves the name on the left.
     trust parser.find_word_at(src, 1, 10, @addr(ws), @addr(wl))
-    assert(ws == 28)
-    assert(wl == 10)
+    assert ws == 28
+    assert wl == 10
 
     // Field name on the second line.
     trust parser.find_word_at(src, 1, 11, @addr(ws), @addr(wl))
-    assert(ws == 39)
-    assert(wl == 1)
+    assert ws == 39
+    assert wl == 1
 }
 
 test {
@@ -193,63 +193,63 @@ test {
     val ws: mut i64 = -1
     val wl: mut i64 = 0
     trust parser.find_word_at(src, 0, 12, @addr(ws), @addr(wl))
-    assert(ws == 12)
-    assert(wl == 1)
+    assert ws == 12
+    assert wl == 1
 
     val ms: mut i64 = -1
     val ml: mut i64 = 0
     trust parser.find_dot_prefix(src, ws, @addr(ms), @addr(ml))
-    assert(ms == 0)
-    assert(ml == 11)
+    assert ms == 0
+    assert ml == 11
 
     val src2: ref u8 = "m.Point"
     trust parser.find_word_at(src2, 0, 3, @addr(ws), @addr(wl))
     trust parser.find_dot_prefix(src2, ws, @addr(ms), @addr(ml))
-    assert(ms == 0)
-    assert(ml == 1)
+    assert ms == 0
+    assert ml == 1
 }
 
 test {
     val content: ref u8 = "type Point = {\n    /// horizontal coordinate\n    x: i32\n    y: mut f64\n    invariant { x > 0 }\n}\n"
 
     val fields: mut ref void = trust parser.parse_type_fields(content, "test.sx", 0)
-    assert(fields != none)
-    assert(coll.PtrList.len(fields) == 2)
+    assert fields != none
+    assert coll.PtrList.len(fields) == 2
 
     match coll.PtrList.get(fields, 0 as usize) {
         some v => {
             val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
-            assert(str.raw_cmp(f.name, "x") == 0)
-            assert(str.raw_cmp(f.ret_type, "i32") == 0)
-            assert(f.line == 2)
-            assert(f.col == 4)
-            assert(f.doc != none)
+            assert str.raw_cmp(f.name, "x") == 0
+            assert str.raw_cmp(f.ret_type, "i32") == 0
+            assert f.line == 2
+            assert f.col == 4
+            assert f.doc != none
         }
         none => {
-            assert(false)
+            assert false
         }
     }
 
     match coll.PtrList.get(fields, 1 as usize) {
         some v => {
             val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
-            assert(str.raw_cmp(f.name, "y") == 0)
-            assert(str.raw_cmp(f.ret_type, "mut f64") == 0)
+            assert str.raw_cmp(f.name, "y") == 0
+            assert str.raw_cmp(f.ret_type, "mut f64") == 0
         }
         none => {
-            assert(false)
+            assert false
         }
     }
     trust parser.free_sym_list(fields)
 }
 
 test {
-    assert(handlers.is_keyword("for"))
-    assert(handlers.is_keyword("fn"))
-    assert(handlers.is_keyword("type"))
-    assert(!handlers.is_keyword("x_instance"))
-    assert(handlers.keyword_description("for") != none)
-    assert(handlers.keyword_signature("fn") != none)
+    assert handlers.is_keyword("for")
+    assert handlers.is_keyword("fn")
+    assert handlers.is_keyword("type")
+    assert !handlers.is_keyword("x_instance")
+    assert handlers.keyword_description("for") != none
+    assert handlers.keyword_signature("fn") != none
 }
 
 test {
@@ -261,39 +261,39 @@ test {
         "stdin", "stdout", "fgets", "atoi", "itoa"
     ]
     for name in names {
-        assert(handlers.is_intrinsic_word(name))
-        assert(handlers.intrinsic_signature(name) != none)
-        assert(handlers.intrinsic_description(name) != none)
+        assert handlers.is_intrinsic_word(name)
+        assert handlers.intrinsic_signature(name) != none
+        assert handlers.intrinsic_description(name) != none
     }
-    assert(!handlers.is_intrinsic_word("not_an_intrinsic"))
+    assert !handlers.is_intrinsic_word("not_an_intrinsic")
 }
 
 test {
     val decl: ref u8 = "val x_instance: mut X = @zeroed"
     val ty: ref u8 = trust handlers.decl_explicit_type(decl)
-    assert(ty != none)
-    assert(str.raw_cmp(ty, "mut X") == 0)
+    assert ty != none
+    assert str.raw_cmp(ty, "mut X") == 0
     trust @free(ty as ref void)
 
     val param: ref u8 = trust handlers.extract_param_type("value: ref u8")
-    assert(param != none)
-    assert(str.raw_cmp(param, "ref u8") == 0)
+    assert param != none
+    assert str.raw_cmp(param, "ref u8") == 0
     trust @free(param as ref void)
 
     val inferred_decl: ref u8 = "val p = X.new()"
     val init: ref u8 = trust handlers.decl_initializer(inferred_decl)
-    assert(init != none)
-    assert(str.raw_cmp(init, "X.new()") == 0)
+    assert init != none
+    assert str.raw_cmp(init, "X.new()") == 0
 
     val inferred: ref u8 = trust handlers.infer_expr_type_name(init)
-    assert(inferred != none)
-    assert(str.raw_cmp(inferred, "X.new") == 0)
+    assert inferred != none
+    assert str.raw_cmp(inferred, "X.new") == 0
     trust @free(init as ref void)
     trust @free(inferred as ref void)
 
     val wrapped: ref u8 = trust handlers.infer_expr_type_name("some mod.Type.new(1, 2)")
-    assert(wrapped != none)
-    assert(str.raw_cmp(wrapped, "mod.Type.new") == 0)
+    assert wrapped != none
+    assert str.raw_cmp(wrapped, "mod.Type.new") == 0
     trust @free(wrapped as ref void)
 }
 
@@ -309,29 +309,29 @@ test {
         src, 0, 15,
         @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
     )
-    assert(has_dot == 1)
-    assert(start == 15)
-    assert(end == 15)
-    assert(base_start == 4)
-    assert(base_len == 10)
+    assert has_dot == 1
+    assert start == 15
+    assert end == 15
+    assert base_start == 4
+    assert base_len == 10
 
     trust handlers.find_completion_context(
         src, 1, 16,
         @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
     )
-    assert(has_dot == 1)
-    assert(start == 31)
-    assert(end == 32)
-    assert(base_start == 20)
-    assert(base_len == 10)
+    assert has_dot == 1
+    assert start == 31
+    assert end == 32
+    assert base_start == 20
+    assert base_len == 10
 
     trust handlers.find_completion_context(
         src, 1, 7,
         @addr(start), @addr(end), @addr(has_dot), @addr(base_start), @addr(base_len)
     )
-    assert(has_dot == 0)
-    assert(start == 20)
-    assert(end == 23)
+    assert has_dot == 0
+    assert start == 20
+    assert end == 23
 }
 
 test {
