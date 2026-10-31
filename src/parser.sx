@@ -175,7 +175,7 @@ fn is_blank_line(line: ref u8, line_len: i64) bool = trust {
         if c != ' ' && c != '\t' && c != '\r' {
             return false
         }
-        i = i + 1
+        i++
     }
     return true
 }
@@ -303,7 +303,7 @@ fn parse_fn_decl(
     sym.doc = raw_dup_cstr(doc)
 
     if i < rest_len && @load8(@ptradd(rest, i)) == '(' {
-        i = i + 1
+        i++
         val recv_start: i64 = i
         for {
             if i >= rest_len {
@@ -312,12 +312,12 @@ fn parse_fn_decl(
             if @load8(@ptradd(rest, i)) == ')' {
                 break
             }
-            i = i + 1
+            i++
         }
         sym.receiver = raw_dup(@ptradd(rest, recv_start), i - recv_start)
         sym.kind = SYM_METHOD
         if i < rest_len {
-            i = i + 1
+            i++
         }
         i = skip_ws(rest, i, rest_len)
     }
@@ -334,7 +334,7 @@ fn parse_fn_decl(
 
     i = skip_ws(rest, i, rest_len)
     if i < rest_len && @load8(@ptradd(rest, i)) == '(' {
-        i = i + 1
+        i++
         val params_start: i64 = i
         val depth: mut i64 = 1
         for {
@@ -351,7 +351,7 @@ fn parse_fn_decl(
                     break
                 }
             }
-            i = i + 1
+            i++
         }
         val plen: i64 = i - params_start
         if plen > 0 {
@@ -361,7 +361,7 @@ fn parse_fn_decl(
             @free(params_raw as ref void)
         }
         if i < rest_len {
-            i = i + 1
+            i++
         }
     }
 
@@ -378,7 +378,7 @@ fn parse_fn_decl(
                 break
             }
         }
-        i = i + 1
+        i++
     }
     val ret_len: i64 = trim_right_len(@ptradd(rest, ret_start), i - ret_start)
     sym.ret_type = raw_dup(@ptradd(rest, ret_start), ret_len)
@@ -418,9 +418,9 @@ fn parse_kw_decl(
                 break
             }
             if @load8(@ptradd(rest, i)) == ')' {
-                i = i + 1 break
+                i++ break
             }
-            i = i + 1
+            i++
         }
         i = skip_ws(rest, i, rest_len)
     }
@@ -473,7 +473,7 @@ fn parse_import_decl(
         if @load8(@ptradd(line, i)) == '"' {
             break
         }
-        i = i + 1
+        i++
     }
     val path: ref u8 = raw_dup(@ptradd(line, path_start), i - path_start)
 
@@ -520,7 +520,7 @@ fn parse_val_decl(
 
     i = skip_ws(line, i, line_len)
     if i < line_len && @load8(@ptradd(line, i)) == ':' {
-        i = i + 1
+        i++
         i = skip_ws(line, i, line_len)
         val type_start: i64 = i
         val sq_depth: mut i64 = 0
@@ -750,7 +750,7 @@ pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, ou
         if c == '\n' {
             cur_line = cur_line + 1
         }
-        i = i + 1
+        i++
     }
 
     val line_base: i64 = i
@@ -889,7 +889,7 @@ fn newline_count_between(s: ref u8, start: i64, end: i64) i64 = trust {
         if @load8(@ptradd(s, i)) == '\n' {
             n = n + 1
         }
-        i = i + 1
+        i++
     }
     return n
 }
@@ -926,7 +926,7 @@ pub fn line_bounds_raw(content: ref u8, target_line: i64, out_start: ref i64, ou
             cur = cur + 1
             start = i + 1
         }
-        i = i + 1
+        i++
     }
     if found == 0 {
         return
@@ -966,7 +966,7 @@ fn find_matching_close_raw(s: ref u8, len: i64, open_idx: i64, open_ch: u8, clos
                 return i
             }
         }
-        i = i + 1
+        i++
     }
     return -1
 }
@@ -1142,7 +1142,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
             } elif c == '}' {
                 depth = depth - 1
             }
-            i = i + 1
+            i++
         }
         if depth <= 0 {
             break
@@ -1187,7 +1187,7 @@ pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref Ca
         if @load8(@ptradd(content, i)) == '\n' {
             cur_line = cur_line + 1
         }
-        i = i + 1
+        i++
     }
     val cursor_pos: mut i64 = i + col
     if cursor_pos > content_len {
@@ -1272,32 +1272,56 @@ pub fn path_to_uri(path: ref u8) ref u8 = trust {
     return buf
 }
 
+fn is_path_sep(c: u8) bool = {
+    if c == '/' {
+        return true
+    }
+    when windows {
+        if c == '\\' {
+            return true
+        }
+    }
+    return false
+}
+
 pub fn path_dirname(path: ref u8) ref u8 = trust {
     if path == none {
         return none
     }
     val len: i64 = str.len_raw(path)
-    val i: mut i64 = len - 1
+    if len == 0 {
+        return raw_dup_cstr(".")
+    }
+
+    val end: mut i64 = len
+    for {
+        if end <= 0 {
+            break
+        }
+        if !is_path_sep(@load8(@ptradd(path, end - 1))) {
+            break
+        }
+        end = end - 1
+    }
+    if end == 0 {
+        return raw_dup(path, 1)
+    }
+
+    val i: mut i64 = end - 1
     for {
         if i < 0 {
-            return raw_dup_cstr(".")
+            break
         }
-        if @load8(@ptradd(path, i)) != '/' {
+        if is_path_sep(@load8(@ptradd(path, i))) {
             break
         }
         i = i - 1
     }
-    for {
-        if i < 0 {
-            return raw_dup_cstr("/")
-        }
-        if @load8(@ptradd(path, i)) == '/' {
-            break
-        }
-        i = i - 1
+    if i < 0 {
+        return raw_dup_cstr(".")
     }
     if i == 0 {
-        return raw_dup_cstr("/")
+        return raw_dup(path, 1)
     }
     return raw_dup(path, i)
 }
@@ -1316,16 +1340,73 @@ pub fn path_join(dir: ref u8, name: ref u8) ref u8 = trust {
     return buf
 }
 
-val os = use("std/os")
+val os         = use("std/os")
+val reflection = use("std/reflection")
+val pathlib    = use("std/path")
 
-pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
+fn has_path_sep(p: ref u8, plen: i64) bool = trust {
+    val i: mut i64 = 0
+    for {
+        if i >= plen {
+            break
+        }
+        if is_path_sep(@load8(@ptradd(p, i))) {
+            return true
+        }
+        i++
+    }
+    return false
+}
+
+fn stdlib_dir_valid(dir: ref u8) bool = trust {
+    if dir == none {
+        return false
+    }
+    val marker: ref u8 = path_join(dir, "stdio/core.sx")
+    if marker == none {
+        return false
+    }
+    val exists: bool = os.exists(marker)
+    @free(marker as ref void)
+    return exists
+}
+
+fn try_stdlib_dir(candidate: ref u8) ref u8 = trust {
+    if candidate == none {
+        return none
+    }
+    if stdlib_dir_valid(candidate) {
+        return candidate
+    }
+    @free(candidate as ref void)
+    return none
+}
+
+fn find_exe_dir() ref u8 = trust {
+    val arena_res = allocators.Arena.new(4096 as usize)
+    match arena_res {
+        ok arena => {
+            val exe_path: ref u8 = reflection.get_exe_path[allocators.Arena](arena)
+            val dir: ref u8 = path_dirname(exe_path)
+            allocators.Arena.free(arena)
+            return dir
+        }
+        err _ => {
+            return none
+        }
+    }
+}
+
+/// Old-style standard library snapshots (`std__<hash>`) that the compiler
+/// materialises inside a workspace.
+fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
     val dir: mut ref u8 = path_dirname(from_file)
     val iters: mut i64 = 0
     for {
         if dir == none {
             break
         }
-        if iters > 16 {
+        if iters > 32 {
             @free(dir as ref void) break
         }
         iters = iters + 1
@@ -1353,6 +1434,10 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
         }
 
         val parent: ref u8 = path_dirname(dir)
+        if parent == none {
+            @free(dir as ref void)
+            break
+        }
         val same: bool = (str.raw_cmp(parent, dir) == 0)
         @free(dir as ref void)
         if same {
@@ -1363,11 +1448,212 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
     return none
 }
 
+/// Locate the standard library that ships with the Spectre compiler.
+///
+/// The compiler keeps `spectrelib/` next to its executable, so the language
+/// server does the same.  A few standard installation layouts are tried as
+/// well, along with the `SPECTRE_STDLIB` / `SPECTRE_ROOT` overrides that the
+/// compiler itself honours.
+pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
+    if os.env("SPECTRE_STDLIB") is some v {
+        val direct: ref u8 = raw_dup_cstr(v)
+        val found: ref u8 = try_stdlib_dir(direct)
+        if found != none {
+            return found
+        }
+        val nested: ref u8 = path_join(v, "spectrelib")
+        val found_nested: ref u8 = try_stdlib_dir(nested)
+        if found_nested != none {
+            return found_nested
+        }
+    }
+
+    if os.env("SPECTRE_ROOT") is some v {
+        val nested: ref u8 = path_join(v, "spectrelib")
+        val found: ref u8 = try_stdlib_dir(nested)
+        if found != none {
+            return found
+        }
+    }
+
+    val exe_dir: ref u8 = find_exe_dir()
+    if exe_dir != none {
+        val c1: ref u8 = try_stdlib_dir(path_join(exe_dir, "spectrelib"))
+        if c1 != none {
+            @free(exe_dir as ref void)
+            return c1
+        }
+        val c2: ref u8 = try_stdlib_dir(path_join(exe_dir, "../share/spectre/spectrelib"))
+        if c2 != none {
+            @free(exe_dir as ref void)
+            return c2
+        }
+        val c3: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectre/spectrelib"))
+        if c3 != none {
+            @free(exe_dir as ref void)
+            return c3
+        }
+        val c4: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectrelib"))
+        if c4 != none {
+            @free(exe_dir as ref void)
+            return c4
+        }
+        @free(exe_dir as ref void)
+    }
+
+    val cwd_candidate: ref u8 = try_stdlib_dir(raw_dup_cstr("spectrelib"))
+    if cwd_candidate != none {
+        return cwd_candidate
+    }
+
+    return find_std_snapshot_dir(from_file)
+}
+
+fn with_sx_suffix(s: ref u8) ref u8 = trust {
+    val len: i64 = str.len_raw(s)
+    val buf: ref u8 = @alloc(len + 4) as ref u8
+    if buf == none {
+        return none
+    }
+    @memcpy(buf as ref void, s as ref void, len as usize)
+    @store8(@ptradd(buf, len), '.')
+    @store8(@ptradd(buf, len + 1), 's')
+    @store8(@ptradd(buf, len + 2), 'x')
+    @store8(@ptradd(buf, len + 3), 0)
+    return buf
+}
+
+fn join3(dir: ref u8, mid: ref u8, name: ref u8) ref u8 = trust {
+    val d1: ref u8 = path_join(dir, mid)
+    if d1 == none {
+        return none
+    }
+    val d2: ref u8 = path_join(d1, name)
+    @free(d1 as ref void)
+    return d2
+}
+
+fn clean_path(p: ref u8) ref u8 = trust {
+    if p == none {
+        return none
+    }
+    val src: mut ref u8 = p
+    when windows {
+        val len: i64 = str.len_raw(src)
+        val buf: ref u8 = raw_dup(src, len)
+        if buf != none {
+            val i: mut i64 = 0
+            for {
+                if i >= len {
+                    break
+                }
+                if @load8(@ptradd(buf, i)) == '\\' {
+                    @store8(@ptradd(buf, i), '/')
+                }
+                i++
+            }
+            @free(src as ref void)
+            src = buf
+        }
+    }
+    val out: ref u8 = pathlib.canonicalize_path(src)
+    if out == none || out == src {
+        return src
+    }
+    @free(src as ref void)
+    return out
+}
+
+fn existing_path(p: ref u8) ref u8 = trust {
+    if p == none {
+        return none
+    }
+    if !os.exists(p) {
+        @free(p as ref void)
+        return none
+    }
+    return clean_path(p)
+}
+
+fn joined_with_sx(dir: ref u8, name: ref u8) ref u8 = trust {
+    val joined: ref u8 = path_join(dir, name)
+    if joined == none {
+        return none
+    }
+    val suffixed: ref u8 = with_sx_suffix(joined)
+    @free(joined as ref void)
+    return suffixed
+}
+
+fn try_module_in_dir(dir: ref u8, mod_path: ref u8, has_sep: bool) ref u8 = trust {
+    val core: ref u8 = existing_path(join3(dir, mod_path, "core.sx"))
+    if core != none {
+        return core
+    }
+
+    if !has_sep {
+        val suffix: ref u8 = with_sx_suffix(mod_path)
+        if suffix != none {
+            val nested: ref u8 = existing_path(join3(dir, mod_path, suffix))
+            @free(suffix as ref void)
+            if nested != none {
+                return nested
+            }
+        }
+    }
+
+    return existing_path(joined_with_sx(dir, mod_path))
+}
+
+fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
+    if start_dir == none {
+        return none
+    }
+    val cur: mut ref u8 = raw_dup_cstr(start_dir)
+    if cur == none {
+        return none
+    }
+    val limit: mut i64 = 0
+    for {
+        if limit >= 32 {
+            break
+        }
+        limit = limit + 1
+
+        val marker: ref u8 = path_join(cur, "sx.mod")
+        if marker != none {
+            val has_marker: bool = os.exists(marker)
+            @free(marker as ref void)
+            if has_marker {
+                return cur
+            }
+        }
+
+        val parent: ref u8 = path_dirname(cur)
+        if parent == none {
+            break
+        }
+        val same: bool = str.raw_cmp(parent, cur) == 0
+        val is_dot: bool = str.raw_cmp(parent, ".") == 0
+        if same || is_dot {
+            @free(parent as ref void)
+            break
+        }
+        @free(cur as ref void)
+        cur = parent
+    }
+    @free(cur as ref void)
+    return raw_dup_cstr(start_dir)
+}
+
 pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trust {
     if current_file == none || mod_path == none {
         return none
     }
     val mlen: i64 = str.len_raw(mod_path)
+    if mlen <= 0 {
+        return none
+    }
 
     if starts_with_n(mod_path, mlen, "std/", 4) {
         val std_dir: ref u8 = find_std_dir(current_file)
@@ -1382,49 +1668,99 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         }
         val result: ref u8 = path_join(inner, "core.sx")
         @free(inner as ref void)
-        return result
+        return existing_path(result)
     }
 
-    val dir: ref u8 = path_dirname(current_file)
-    if dir == none {
+    val file_dir: ref u8 = path_dirname(current_file)
+    if file_dir == none {
         return none
     }
+    val workspace: ref u8 = find_workspace_root(file_dir)
 
     if mlen > 3 && starts_with_n(@ptradd(mod_path, mlen - 3), 3, ".sx", 3) {
-        val direct: ref u8 = path_join(dir, mod_path)
-        if direct != none && os.exists(direct) {
-            @free(dir as ref void)
+        val direct: ref u8 = existing_path(path_join(file_dir, mod_path))
+        if direct != none {
+            @free(file_dir as ref void)
+            if workspace != none {
+                @free(workspace as ref void)
+            }
             return direct
         }
-        if direct != none {
-            @free(direct as ref void)
+        if workspace != none && str.raw_cmp(workspace, file_dir) != 0 {
+            val ws_direct: ref u8 = existing_path(path_join(workspace, mod_path))
+            if ws_direct != none {
+                @free(file_dir as ref void)
+                @free(workspace as ref void)
+                return ws_direct
+            }
+        }
+        @free(file_dir as ref void)
+        if workspace != none {
+            @free(workspace as ref void)
+        }
+        return none
+    }
+
+    val has_sep: bool = has_path_sep(mod_path, mlen)
+    val exe_dir: ref u8 = find_exe_dir()
+
+    if exe_dir != none {
+        val found: ref u8 = try_module_in_dir(exe_dir, mod_path, has_sep)
+        if found != none {
+            @free(exe_dir as ref void)
+            @free(file_dir as ref void)
+            if workspace != none {
+                @free(workspace as ref void)
+            }
+            return found
         }
     }
 
-    val sx_name: ref u8 = @alloc(mlen + 4) as ref u8
-    if sx_name == none {
-        @free(dir as ref void) return none
-    }
-    @memcpy(sx_name as ref void, mod_path as ref void, mlen as usize)
-    @memcpy(@ptradd(sx_name, mlen), ".sx" as ref void, 4 as usize)
-
-    val candidate1: ref u8 = path_join(dir, sx_name)
-    @free(sx_name as ref void)
-
-    if candidate1 != none && os.exists(candidate1) {
-        @free(dir as ref void)
-        return candidate1
-    }
-    if candidate1 != none {
-        @free(candidate1 as ref void)
+    if workspace != none && str.raw_cmp(workspace, file_dir) != 0 {
+        val found: ref u8 = try_module_in_dir(workspace, mod_path, has_sep)
+        if found != none {
+            if exe_dir != none {
+                @free(exe_dir as ref void)
+            }
+            @free(file_dir as ref void)
+            @free(workspace as ref void)
+            return found
+        }
     }
 
-    val inner2: ref u8 = path_join(dir, mod_path)
-    @free(dir as ref void)
-    if inner2 == none {
-        return none
+    val local: ref u8 = try_module_in_dir(file_dir, mod_path, has_sep)
+    if local != none {
+        if exe_dir != none {
+            @free(exe_dir as ref void)
+        }
+        @free(file_dir as ref void)
+        if workspace != none {
+            @free(workspace as ref void)
+        }
+        return local
     }
-    val candidate2: ref u8 = path_join(inner2, "core.sx")
-    @free(inner2 as ref void)
-    return candidate2
+
+    if exe_dir != none {
+        @free(exe_dir as ref void)
+    }
+    @free(file_dir as ref void)
+    if workspace != none {
+        @free(workspace as ref void)
+    }
+    return none
+}
+
+test {
+    val d1 = trust path_dirname("/a/b/c.sx")
+    val d2 = trust path_dirname("/a/b/")
+    val d3 = trust path_dirname("/")
+    val d4 = trust path_dirname("c.sx")
+    val d5 = trust path_dirname(".")
+    val j1 = trust path_join("/a", "b.sx")
+    assert str.raw_cmp(d1, "/a/b") == 0
+    assert str.raw_cmp(d2, "/a") == 0
+    assert str.raw_cmp(d3, "/") == 0
+    assert str.raw_cmp(d4, ".") == 0
+    assert str.raw_cmp(d5, ".") == 0
+    assert str.raw_cmp(j1, "/a/b.sx") == 0
 }
