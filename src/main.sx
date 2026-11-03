@@ -243,7 +243,7 @@ test {
     trust parser.free_sym_list(fields)
 }
 
-test {
+test "keyword detection" {
     assert handlers.is_keyword("for")
     assert handlers.is_keyword("fn")
     assert handlers.is_keyword("type")
@@ -252,9 +252,9 @@ test {
     assert handlers.keyword_signature("fn") != none
 }
 
-test {
+test "intrinsic detection" {
     val names: list[ref u8] = [
-        "fmt", "len", "addr", "deref", "alloc", "free", "memcpy", "memset",
+        "fmtalloc", "len", "addr", "deref", "alloc", "free", "memcpy", "memset",
         "memmove", "puts", "print", "zeroed", "args", "bitcast", "load",
         "load8", "call", "snprintf", "dprintf", "reserve", "get", "insert",
         "capacity", "ptradd", "store", "store8", "staticerror", "flush",
