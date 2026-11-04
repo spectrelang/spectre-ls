@@ -101,7 +101,7 @@ pub fn sym_free(s: mut ref Symbol, alloc: allocators.HeapAllocator) void = trust
     if s.params != none {
         coll.PtrList.free[_](alloc, s.params)
     }
-    @free(s as ref void)
+    @free(s)
 }
 
 pub fn free_sym_list(list: mut ref void) void = trust {
@@ -132,7 +132,7 @@ fn raw_dup(s: ref u8, len: i64) ref u8 = trust {
     if buf == none {
         return none
     }
-    @memcpy(buf as ref void, s as ref void, len as usize)
+    @memcpy(buf, s, len as usize)
     @store8(@ptradd(buf, len), 0)
     return buf
 }
@@ -262,10 +262,10 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
         } else {
             val c: u8 = @load8(@ptradd(params, i))
             if c == '[' {
-                depth = depth + 1
+                depth++
             } elif c == ']' {
                 if depth > 0 {
-                    depth = depth - 1
+                    depth--
                 }
             } elif c == ',' && depth == 0 {
                 emit = 1
@@ -283,7 +283,7 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
                 if c != ' ' && c != '\t' {
                     break
                 }
-                s = s + 1
+                s++
             }
             for {
                 if e <= s {
@@ -293,12 +293,12 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
                 if c != ' ' && c != '\t' {
                     break
                 }
-                e = e - 1
+                e--
             }
             if e > s {
                 val p: ref u8 = raw_dup(@ptradd(params, s), e - s)
                 if p != none {
-                    val pv: usize = @bitcast(p as ref void, usize)
+                    val pv: usize = @bitcast(p, usize)
                     val pr = coll.PtrList.push[_](alloc, list, pv)
                     match pr {
                         ok _ => {}
@@ -376,9 +376,9 @@ fn parse_fn_decl(
             }
             val c: u8 = @load8(@ptradd(rest, i))
             if c == '(' {
-                depth = depth + 1
+                depth++
             } elif c == ')' {
-                depth = depth - 1
+                depth--
                 if depth == 0 {
                     break
                 }
@@ -390,7 +390,7 @@ fn parse_fn_decl(
             val params_raw: ref u8 = raw_dup(@ptradd(rest, params_start), plen)
             sym.params = parse_params(params_raw, plen)
             sym.param_count = coll.PtrList.len(sym.params) as i64
-            @free(params_raw as ref void)
+            @free(params_raw)
         }
         if i < rest_len {
             i++
@@ -427,7 +427,7 @@ fn parse_fn_decl(
                 break
             }
         }
-        sig_end = sig_end + 1
+        sig_end++
     }
     val sig_trimmed: i64 = trim_right_len(full_line, sig_end)
     sym.signature = raw_dup(full_line, sig_trimmed)
@@ -493,10 +493,10 @@ fn parse_import_decl(
     i = skip_ws(line, i, line_len)
 
     if !starts_with_n(@ptradd(line, i), line_len - i, "= use(\"", 7) {
-        @free(alias as ref void)
+        @free(alias)
         return none
     }
-    i = i + 7
+    i += 7
     val path_start: i64 = i
     for {
         if i >= line_len {
@@ -511,8 +511,8 @@ fn parse_import_decl(
 
     val sym: mut ref Symbol = sym_alloc()
     if sym == none {
-        @free(alias as ref void)
-        @free(path as ref void)
+        @free(alias)
+        @free(path)
         return none
     }
     sym.name = alias
@@ -563,16 +563,16 @@ fn parse_val_decl(
             }
             val c: u8 = @load8(@ptradd(line, i))
             if c == '[' {
-                sq_depth = sq_depth + 1
+                sq_depth++
             } elif c == ']' {
                 if sq_depth > 0 {
-                    sq_depth = sq_depth - 1
+                    sq_depth--
                 }
             } elif c == '(' {
-                paren_depth = paren_depth + 1
+                paren_depth++
             } elif c == ')' {
                 if paren_depth > 0 {
-                    paren_depth = paren_depth - 1
+                    paren_depth--
                 }
             } elif c == '=' && sq_depth == 0 && paren_depth == 0 {
                 break
@@ -615,7 +615,7 @@ fn process_line(
         }
         if !starts_with_n(decl, dlen, "extern ", 7) {
             str.clear(doc_buf)
-            @store(has_doc as ref void, 0 as i64)
+            @store(has_doc, 0 as i64)
             return
         }
     }
@@ -632,9 +632,9 @@ fn process_line(
         if part != none {
             str.push_cstr(doc_buf, part)
             str.push_char(doc_buf, '\n')
-            @free(part as ref void)
+            @free(part)
         }
-        @store(has_doc as ref void, 1 as i64)
+        @store(has_doc, 1 as i64)
         return
     }
 
@@ -672,15 +672,15 @@ fn process_line(
                 }
                 val c: u8 = @load8(@ptradd(rest, j))
                 if c == '(' {
-                    depth = depth + 1
+                    depth++
                 } elif c == ')' {
-                    depth = depth - 1
+                    depth--
                     if depth == 0 {
-                        j = j + 1
+                        j++
                         break
                     }
                 }
-                j = j + 1
+                j++
             }
             val aoff: i64 = skip_ws(rest, j, rlen)
             rest = @ptradd(rest, aoff)
@@ -706,7 +706,7 @@ fn process_line(
 
     if sym != none {
         sym.col = sym.col + col_offset
-        val sv: usize = @bitcast(sym as ref void, usize)
+        val sv: usize = @bitcast(sym, usize)
         val pr = coll.PtrList.push[_](alloc, syms, sv)
         match pr {
             ok _ => {}
@@ -715,10 +715,10 @@ fn process_line(
             }
         }
         str.clear(doc_buf)
-        @store(has_doc as ref void, 0 as i64)
+        @store(has_doc, 0 as i64)
     } else {
         str.clear(doc_buf)
-        @store(has_doc as ref void, 0 as i64)
+        @store(has_doc, 0 as i64)
     }
 }
 
@@ -761,7 +761,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
             if c == '\n' || c == '\r' {
                 break
             }
-            line_end = line_end + 1
+            line_end++
         }
 
         process_line(
@@ -778,10 +778,10 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
             }
             val c: u8 = @load8(@ptradd(content, j))
             if c == '{' {
-                nesting_depth = nesting_depth + 1
+                nesting_depth++
             } elif c == '}' {
                 if nesting_depth > 0 {
-                    nesting_depth = nesting_depth - 1
+                    nesting_depth--
                 }
             }
             j++
@@ -791,10 +791,10 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
         if pos < content_len {
             val c: u8 = @load8(@ptradd(content, pos))
             if c == '\r' {
-                pos = pos + 1
+                pos++
             }
             if pos < content_len && @load8(@ptradd(content, pos)) == '\n' {
-                pos = pos + 1
+                pos++
             }
         }
         line_num++
@@ -812,8 +812,8 @@ pub fn find_word_at(
     out_start: ref i64,
     out_len: ref i64
 ) void = trust {
-    @store(out_start as ref void, -1 as i64)
-    @store(out_len as ref void, 0 as i64)
+    @store(out_start, -1 as i64)
+    @store(out_len, 0 as i64)
 
     val content_len: i64 = str.len_raw(content)
     if content_len == 0 {
@@ -831,7 +831,7 @@ pub fn find_word_at(
         }
         val c: u8 = @load8(@ptradd(content, i))
         if c == '\n' {
-            cur_line = cur_line + 1
+            cur_line++
         }
         i++
     }
@@ -846,14 +846,14 @@ pub fn find_word_at(
         if c == '\n' || c == '\r' {
             break
         }
-        line_end = line_end + 1
+        line_end++
     }
 
     val probe: mut i64 = i + col
     if probe > line_end {
         probe = line_end
     }
-    if probe >= line_end && line_end > line_base {
+    if probe >= line_end > line_base {
         probe = line_end - 1
     }
     if probe >= content_len {
@@ -870,7 +870,7 @@ pub fn find_word_at(
     val at_c: u8 = @load8(@ptradd(content, probe))
     if !is_ident_cont(at_c) {
         if probe > line_base && is_ident_cont(@load8(@ptradd(content, probe - 1))) {
-            probe = probe - 1
+            probe--
         } else {
             return
         }
@@ -885,7 +885,7 @@ pub fn find_word_at(
         if !is_ident_cont(@load8(@ptradd(content, ws - 1))) {
             break
         }
-        ws = ws - 1
+        ws--
     }
 
     val we: mut i64 = char_pos + 1
@@ -896,11 +896,11 @@ pub fn find_word_at(
         if !is_ident_cont(@load8(@ptradd(content, we))) {
             break
         }
-        we = we + 1
+        we++
     }
 
-    @store(out_start as ref void, ws)
-    @store(out_len as ref void, we - ws)
+    @store(out_start, ws)
+    @store(out_len, we - ws)
 }
 
 /// If the cursor is inside the path string of a `use("...")` import, return
@@ -914,8 +914,8 @@ pub fn find_use_path_at(
     out_start: ref i64,
     out_len: ref i64
 ) void = trust {
-    @store(out_start as ref void, -1 as i64)
-    @store(out_len as ref void, 0 as i64)
+    @store(out_start, -1 as i64)
+    @store(out_len, 0 as i64)
 
     if content == none || line < 0 || col < 0 {
         return
@@ -965,8 +965,8 @@ pub fn find_use_path_at(
                     }
                     if path_end < line_len {
                         if probe >= quote && probe <= path_end {
-                            @store(out_start as ref void, line_start + path_start)
-                            @store(out_len as ref void, path_end - path_start)
+                            @store(out_start, line_start + path_start)
+                            @store(out_len, path_end - path_start)
                             return
                         }
                     }
@@ -983,8 +983,8 @@ pub fn find_dot_prefix(
     out_mod: ref i64,
     out_mod_len: ref i64
 ) void = trust {
-    @store(out_mod as ref void, -1 as i64)
-    @store(out_mod_len as ref void, 0 as i64)
+    @store(out_mod, -1 as i64)
+    @store(out_mod_len, 0 as i64)
 
     if word_start <= 0 {
         return
@@ -1009,13 +1009,13 @@ pub fn find_dot_prefix(
             if !is_ident_cont(@load8(@ptradd(content, ms - 1))) {
                 break
             }
-            ms = ms - 1
+            ms--
         }
         if ms == seg_end {
             break
         }
         if ms > 0 && @load8(@ptradd(content, ms - 1)) == '.' {
-            ms = ms - 1
+            ms--
         } else {
             break
         }
@@ -1023,8 +1023,8 @@ pub fn find_dot_prefix(
     if me - ms <= 0 {
         return
     }
-    @store(out_mod as ref void, ms)
-    @store(out_mod_len as ref void, me - ms)
+    @store(out_mod, ms)
+    @store(out_mod_len, me - ms)
 }
 
 fn line_start_at(s: ref u8, idx: i64) i64 = trust {
@@ -1036,7 +1036,7 @@ fn line_start_at(s: ref u8, idx: i64) i64 = trust {
         if @load8(@ptradd(s, j - 1)) == '\n' {
             break
         }
-        j = j - 1
+        j--
     }
     return j
 }
@@ -1049,7 +1049,7 @@ fn newline_count_between(s: ref u8, start: i64, end: i64) i64 = trust {
             break
         }
         if @load8(@ptradd(s, i)) == '\n' {
-            n = n + 1
+            n++
         }
         i++
     }
@@ -1062,8 +1062,8 @@ pub fn line_bounds_raw(
     out_start: ref i64,
     out_end: ref i64
 ) void = trust {
-    @store(out_start as ref void, -1 as i64)
-    @store(out_end as ref void, -1 as i64)
+    @store(out_start, -1 as i64)
+    @store(out_end, -1 as i64)
     if content == none || target_line < 0 {
         return
     }
@@ -1090,7 +1090,7 @@ pub fn line_bounds_raw(
             break
         }
         if @load8(@ptradd(content, i)) == '\n' {
-            cur = cur + 1
+            cur++
             start = i + 1
         }
         i++
@@ -1108,10 +1108,10 @@ pub fn line_bounds_raw(
         if c == '\n' || c == '\r' {
             break
         }
-        end = end + 1
+        end++
     }
-    @store(out_start as ref void, start)
-    @store(out_end as ref void, end)
+    @store(out_start, start)
+    @store(out_end, end)
 }
 
 fn find_matching_close_raw(
@@ -1132,9 +1132,9 @@ fn find_matching_close_raw(
         }
         val c: u8 = @load8(@ptradd(s, i))
         if c == open_ch {
-            depth = depth + 1
+            depth++
         } elif c == close_ch {
-            depth = depth - 1
+            depth--
             if depth == 0 {
                 return i
             }
@@ -1205,7 +1205,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
             open_idx = oi
             break
         }
-        oi = oi + 1
+        oi++
     }
     if open_idx < 0 {
         return fields
@@ -1236,7 +1236,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
             if c == '\n' || c == '\r' {
                 break
             }
-            line_end = line_end + 1
+            line_end++
         }
 
         val seg: ref u8 = @ptradd(content, pos)
@@ -1263,7 +1263,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                 if part != none {
                     str.push_cstr(doc_buf, part)
                     str.push_char(doc_buf, '\n')
-                    @free(part as ref void)
+                    @free(part)
                 }
             }
         } elif !is_comment && tlen > 0 && depth == 1 {
@@ -1286,7 +1286,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                                 field_doc, file, cur_line, pos + lead - abs_line_start
                             )
                             if field != none {
-                                val fv: usize = @bitcast(field as ref void, usize)
+                                val fv: usize = @bitcast(field, usize)
                                 match coll.PtrList.push[allocators.HeapAllocator](
                                     alloc,
                                     fields,
@@ -1318,9 +1318,9 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
             }
             val c: u8 = @load8(@ptradd(content, i))
             if c == '{' {
-                depth = depth + 1
+                depth++
             } elif c == '}' {
-                depth = depth - 1
+                depth--
             }
             i++
         }
@@ -1332,14 +1332,14 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
         if pos < len {
             val c: u8 = @load8(@ptradd(content, pos))
             if c == '\r' {
-                pos = pos + 1
+                pos++
             }
             if pos < len && @load8(@ptradd(content, pos)) == '\n' {
-                pos = pos + 1
+                pos++
             }
         }
         abs_line_start = pos
-        cur_line = cur_line + 1
+        cur_line++
     }
 
     str.string_free(doc_buf)
@@ -1376,7 +1376,7 @@ pub fn find_active_call(
             break
         }
         if @load8(@ptradd(content, i)) == '\n' {
-            cur_line = cur_line + 1
+            cur_line++
         }
         i++
     }
@@ -1418,11 +1418,11 @@ pub fn find_active_call(
             if t.ch == '(' {
                 if sp < max_nesting {
                     @store(@ptradd(stack as ref u8, sp * 8) as ref void, ti as i64)
-                    sp = sp + 1
+                    sp++
                 }
             } elif t.ch == ')' {
                 if sp > 0 {
-                    sp = sp - 1
+                    sp--
                 }
             }
         }
@@ -1471,7 +1471,7 @@ pub fn find_active_call(
             last_dot = dt.start
         }
         chain_start = pt.start
-        j = j - 2
+        j -= 2
     }
 
     if last_dot > chain_start {
@@ -1511,25 +1511,25 @@ pub fn find_active_call(
         }
         if t.kind == TOK_PUNCT {
             if t.ch == '(' {
-                paren_depth = paren_depth + 1
+                paren_depth++
             } elif t.ch == ')' {
                 if paren_depth > 0 {
-                    paren_depth = paren_depth - 1
+                    paren_depth--
                 }
             } elif t.ch == '[' {
-                square_depth = square_depth + 1
+                square_depth++
             } elif t.ch == ']' {
                 if square_depth > 0 {
-                    square_depth = square_depth - 1
+                    square_depth--
                 }
             } elif t.ch == '{' {
-                brace_depth = brace_depth + 1
+                brace_depth++
             } elif t.ch == '}' {
                 if brace_depth > 0 {
-                    brace_depth = brace_depth - 1
+                    brace_depth--
                 }
             } elif t.ch == ',' && paren_depth == 0 && square_depth == 0 && brace_depth == 0 {
-                comma_count = comma_count + 1
+                comma_count++
             }
         }
         ci++
@@ -1563,8 +1563,8 @@ pub fn path_to_uri(path: ref u8) ref u8 = trust {
     if buf == none {
         return none
     }
-    @memcpy(buf as ref void, prefix as ref void, pfx_len as usize)
-    @memcpy(@ptradd(buf, pfx_len), path as ref void, plen as usize)
+    @memcpy(buf, prefix, pfx_len as usize)
+    @memcpy(@ptradd(buf, pfx_len), path, plen as usize)
     @store8(@ptradd(buf, pfx_len + plen), 0)
     return buf
 }
@@ -1598,7 +1598,7 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
         if !is_path_sep(@load8(@ptradd(path, end - 1))) {
             break
         }
-        end = end - 1
+        end--
     }
     if end == 0 {
         return raw_dup(path, 1)
@@ -1612,7 +1612,7 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
         if is_path_sep(@load8(@ptradd(path, i))) {
             break
         }
-        i = i - 1
+        i--
     }
     if i < 0 {
         return raw_dup_cstr(".")
@@ -1630,9 +1630,9 @@ pub fn path_join(dir: ref u8, name: ref u8) ref u8 = trust {
     if buf == none {
         return none
     }
-    @memcpy(buf as ref void, dir as ref void, dl as usize)
+    @memcpy(buf, dir, dl as usize)
     @store8(@ptradd(buf, dl), '/')
-    @memcpy(@ptradd(buf, dl + 1), name as ref void, nl as usize)
+    @memcpy(@ptradd(buf, dl + 1), name, nl as usize)
     @store8(@ptradd(buf, dl + 1 + nl), 0)
     return buf
 }
@@ -1664,7 +1664,7 @@ fn stdlib_dir_valid(dir: ref u8) bool = trust {
         return false
     }
     val exists: bool = os.exists(marker)
-    @free(marker as ref void)
+    @free(marker)
     return exists
 }
 
@@ -1675,7 +1675,7 @@ fn try_stdlib_dir(candidate: ref u8) ref u8 = trust {
     if stdlib_dir_valid(candidate) {
         return candidate
     }
-    @free(candidate as ref void)
+    @free(candidate)
     return none
 }
 
@@ -1704,9 +1704,9 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
             break
         }
         if iters > 32 {
-            @free(dir as ref void) break
+            @free(dir) break
         }
-        iters = iters + 1
+        iters++
 
         val dh: ref void = os.opendir(dir)
         if dh != none {
@@ -1725,20 +1725,20 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
             }
             os.closedir(dh)
             if found != none {
-                @free(dir as ref void)
+                @free(dir)
                 return found
             }
         }
 
         val parent: ref u8 = path_dirname(dir)
         if parent == none {
-            @free(dir as ref void)
+            @free(dir)
             break
         }
         val same: bool = (str.raw_cmp(parent, dir) == 0)
-        @free(dir as ref void)
+        @free(dir)
         if same {
-            @free(parent as ref void) break
+            @free(parent) break
         }
         dir = parent
     }
@@ -1777,25 +1777,25 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
     if exe_dir != none {
         val c1: ref u8 = try_stdlib_dir(path_join(exe_dir, "spectrelib"))
         if c1 != none {
-            @free(exe_dir as ref void)
+            @free(exe_dir)
             return c1
         }
         val c2: ref u8 = try_stdlib_dir(path_join(exe_dir, "../share/spectre/spectrelib"))
         if c2 != none {
-            @free(exe_dir as ref void)
+            @free(exe_dir)
             return c2
         }
         val c3: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectre/spectrelib"))
         if c3 != none {
-            @free(exe_dir as ref void)
+            @free(exe_dir)
             return c3
         }
         val c4: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectrelib"))
         if c4 != none {
-            @free(exe_dir as ref void)
+            @free(exe_dir)
             return c4
         }
-        @free(exe_dir as ref void)
+        @free(exe_dir)
     }
 
     val cwd_candidate: ref u8 = try_stdlib_dir(raw_dup_cstr("spectrelib"))
@@ -1812,7 +1812,7 @@ fn with_sx_suffix(s: ref u8) ref u8 = trust {
     if buf == none {
         return none
     }
-    @memcpy(buf as ref void, s as ref void, len as usize)
+    @memcpy(buf, s, len as usize)
     @store8(@ptradd(buf, len), '.')
     @store8(@ptradd(buf, len + 1), 's')
     @store8(@ptradd(buf, len + 2), 'x')
@@ -1826,7 +1826,7 @@ fn join3(dir: ref u8, mid: ref u8, name: ref u8) ref u8 = trust {
         return none
     }
     val d2: ref u8 = path_join(d1, name)
-    @free(d1 as ref void)
+    @free(d1)
     return d2
 }
 
@@ -1849,7 +1849,7 @@ fn clean_path(p: ref u8) ref u8 = trust {
                 }
                 i++
             }
-            @free(src as ref void)
+            @free(src)
             src = buf
         }
     }
@@ -1857,7 +1857,7 @@ fn clean_path(p: ref u8) ref u8 = trust {
     if out == none || out == src {
         return src
     }
-    @free(src as ref void)
+    @free(src)
     return out
 }
 
@@ -1866,7 +1866,7 @@ fn existing_path(p: ref u8) ref u8 = trust {
         return none
     }
     if !os.exists(p) {
-        @free(p as ref void)
+        @free(p)
         return none
     }
     return clean_path(p)
@@ -1878,7 +1878,7 @@ fn joined_with_sx(dir: ref u8, name: ref u8) ref u8 = trust {
         return none
     }
     val suffixed: ref u8 = with_sx_suffix(joined)
-    @free(joined as ref void)
+    @free(joined)
     return suffixed
 }
 
@@ -1892,7 +1892,7 @@ fn try_module_in_dir(dir: ref u8, mod_path: ref u8, has_sep: bool) ref u8 = trus
         val suffix: ref u8 = with_sx_suffix(mod_path)
         if suffix != none {
             val nested: ref u8 = existing_path(join3(dir, mod_path, suffix))
-            @free(suffix as ref void)
+            @free(suffix)
             if nested != none {
                 return nested
             }
@@ -1915,12 +1915,12 @@ fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
         if limit >= 32 {
             break
         }
-        limit = limit + 1
+        limit++
 
         val marker: ref u8 = path_join(cur, "sx.mod")
         if marker != none {
             val has_marker: bool = os.exists(marker)
-            @free(marker as ref void)
+            @free(marker)
             if has_marker {
                 return cur
             }
@@ -1933,13 +1933,13 @@ fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
         val same: bool = str.raw_cmp(parent, cur) == 0
         val is_dot: bool = str.raw_cmp(parent, ".") == 0
         if same || is_dot {
-            @free(parent as ref void)
+            @free(parent)
             break
         }
-        @free(cur as ref void)
+        @free(cur)
         cur = parent
     }
-    @free(cur as ref void)
+    @free(cur)
     return raw_dup_cstr(start_dir)
 }
 
@@ -1959,12 +1959,12 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         }
         val subpath: ref u8 = @ptradd(mod_path, 4)
         val inner: ref u8 = path_join(std_dir, subpath)
-        @free(std_dir as ref void)
+        @free(std_dir)
         if inner == none {
             return none
         }
         val result: ref u8 = path_join(inner, "core.sx")
-        @free(inner as ref void)
+        @free(inner)
         return existing_path(result)
     }
 
@@ -1977,23 +1977,23 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     if mlen > 3 && starts_with_n(@ptradd(mod_path, mlen - 3), 3, ".sx", 3) {
         val direct: ref u8 = existing_path(path_join(file_dir, mod_path))
         if direct != none {
-            @free(file_dir as ref void)
+            @free(file_dir)
             if workspace != none {
-                @free(workspace as ref void)
+                @free(workspace)
             }
             return direct
         }
         if workspace != none && str.raw_cmp(workspace, file_dir) != 0 {
             val ws_direct: ref u8 = existing_path(path_join(workspace, mod_path))
             if ws_direct != none {
-                @free(file_dir as ref void)
-                @free(workspace as ref void)
+                @free(file_dir)
+                @free(workspace)
                 return ws_direct
             }
         }
-        @free(file_dir as ref void)
+        @free(file_dir)
         if workspace != none {
-            @free(workspace as ref void)
+            @free(workspace)
         }
         return none
     }
@@ -2004,10 +2004,10 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     if exe_dir != none {
         val found: ref u8 = try_module_in_dir(exe_dir, mod_path, has_sep)
         if found != none {
-            @free(exe_dir as ref void)
-            @free(file_dir as ref void)
+            @free(exe_dir)
+            @free(file_dir)
             if workspace != none {
-                @free(workspace as ref void)
+                @free(workspace)
             }
             return found
         }
@@ -2017,10 +2017,10 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         val found: ref u8 = try_module_in_dir(workspace, mod_path, has_sep)
         if found != none {
             if exe_dir != none {
-                @free(exe_dir as ref void)
+                @free(exe_dir)
             }
-            @free(file_dir as ref void)
-            @free(workspace as ref void)
+            @free(file_dir)
+            @free(workspace)
             return found
         }
     }
@@ -2028,21 +2028,21 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     val local: ref u8 = try_module_in_dir(file_dir, mod_path, has_sep)
     if local != none {
         if exe_dir != none {
-            @free(exe_dir as ref void)
+            @free(exe_dir)
         }
-        @free(file_dir as ref void)
+        @free(file_dir)
         if workspace != none {
-            @free(workspace as ref void)
+            @free(workspace)
         }
         return local
     }
 
     if exe_dir != none {
-        @free(exe_dir as ref void)
+        @free(exe_dir)
     }
-    @free(file_dir as ref void)
+    @free(file_dir)
     if workspace != none {
-        @free(workspace as ref void)
+        @free(workspace)
     }
     return none
 }
@@ -2118,11 +2118,11 @@ fn scan_token_push(tokens: mut ref void, t: ref ScanToken) void = trust {
         return
     }
     val alloc: allocators.HeapAllocator = @zeroed
-    val tv: usize = @bitcast(t as ref void, usize)
+    val tv: usize = @bitcast(t, usize)
     match coll.PtrList.push[_](alloc, tokens, tv) {
         ok _ => {}
         err _ => {
-            @free(t as ref void)
+            @free(t)
         }
     }
 }
@@ -2168,12 +2168,12 @@ fn scan_tokens(content: ref u8) ref void = trust {
 
         if c == ' ' || c == '\t' || c == '\r' {
             i++
-            col = col + 1
+            col++
             continue
         }
         if c == '\n' {
             i++
-            line = line + 1
+            line++
             col = 0
             if pending_callable == 1 && pending_line != line {
                 pending_callable = 0
@@ -2191,7 +2191,7 @@ fn scan_tokens(content: ref u8) ref void = trust {
                     break
                 }
                 i++
-                col = col + 1
+                col++
             }
             continue
         }
@@ -2199,8 +2199,8 @@ fn scan_tokens(content: ref u8) ref void = trust {
         // Raw strings start with `\\` and may continue on following lines that
         // also start with `\\`.
         if c == '\\' && i + 1 < len && @load8(@ptradd(content, i + 1)) == '\\' {
-            i = i + 2
-            col = col + 2
+            i += 2
+            col += 2
             for {
                 if i >= len {
                     break
@@ -2209,11 +2209,11 @@ fn scan_tokens(content: ref u8) ref void = trust {
                     break
                 }
                 i++
-                col = col + 1
+                col++
             }
             if i < len && @load8(@ptradd(content, i)) == '\n' {
                 i++
-                line = line + 1
+                line++
                 col = 0
             }
             for {
@@ -2228,13 +2228,13 @@ fn scan_tokens(content: ref u8) ref void = trust {
                         break
                     }
                     i++
-                    col = col + 1
+                    col++
                 }
                 if i + 1 < len &&
                 @load8(@ptradd(content, i)) == '\\' &&
                 @load8(@ptradd(content, i + 1)) == '\\' {
-                    i = i + 2
-                    col = col + 2
+                    i += 2
+                    col += 2
                     for {
                         if i >= len {
                             break
@@ -2243,11 +2243,11 @@ fn scan_tokens(content: ref u8) ref void = trust {
                             break
                         }
                         i++
-                        col = col + 1
+                        col++
                     }
                     if i < len && @load8(@ptradd(content, i)) == '\n' {
                         i++
-                        line = line + 1
+                        line++
                         col = 0
                     }
                 } else {
@@ -2262,30 +2262,30 @@ fn scan_tokens(content: ref u8) ref void = trust {
         // String literals.
         if c == '"' {
             i++
-            col = col + 1
+            col++
             for {
                 if i >= len {
                     break
                 }
                 val sc: u8 = @load8(@ptradd(content, i))
                 if sc == '\\' && i + 1 < len {
-                    i = i + 2
-                    col = col + 2
+                    i += 2
+                    col += 2
                     continue
                 }
                 if sc == '"' {
                     i++
-                    col = col + 1
+                    col++
                     break
                 }
                 if sc == '\n' {
                     i++
-                    line = line + 1
+                    line++
                     col = 0
                     continue
                 }
                 i++
-                col = col + 1
+                col++
             }
             continue
         }
@@ -2293,30 +2293,30 @@ fn scan_tokens(content: ref u8) ref void = trust {
         // Character literals.
         if c == '\'' {
             i++
-            col = col + 1
+            col++
             for {
                 if i >= len {
                     break
                 }
                 val cc: u8 = @load8(@ptradd(content, i))
                 if cc == '\\' && i + 1 < len {
-                    i = i + 2
-                    col = col + 2
+                    i += 2
+                    col += 2
                     continue
                 }
                 if cc == '\'' {
                     i++
-                    col = col + 1
+                    col++
                     break
                 }
                 if cc == '\n' {
                     i++
-                    line = line + 1
+                    line++
                     col = 0
                     break
                 }
                 i++
-                col = col + 1
+                col++
             }
             continue
         }
@@ -2332,7 +2332,7 @@ fn scan_tokens(content: ref u8) ref void = trust {
                     break
                 }
                 i++
-                col = col + 1
+                col++
             }
             val tlen: i64 = i - start
             val t: ref ScanToken = scan_tok_new(
@@ -2364,7 +2364,7 @@ fn scan_tokens(content: ref u8) ref void = trust {
                 val nc: u8 = @load8(@ptradd(content, i))
                 if is_ident_cont(nc) || nc == '.' {
                     i++
-                    col = col + 1
+                    col++
                 } else {
                     break
                 }
@@ -2374,18 +2374,18 @@ fn scan_tokens(content: ref u8) ref void = trust {
 
         if c == '{' {
             if pending_callable == 1 && pending_line == line {
-                next_owner = next_owner + 1
+                next_owner++
                 current_owner = next_owner
                 pending_callable = 0
             }
             val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
             scan_token_push(tokens, t)
-            depth = depth + 1
+            depth++
             if depth < max_depth {
                 @store(@ptradd(owner_stack as ref u8, depth * 8) as ref void, current_owner)
             }
             i++
-            col = col + 1
+            col++
             continue
         }
 
@@ -2393,7 +2393,7 @@ fn scan_tokens(content: ref u8) ref void = trust {
             val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
             scan_token_push(tokens, t)
             if depth > 0 {
-                depth = depth - 1
+                depth--
                 if depth < max_depth {
                     current_owner = @load(@ptradd(
                             owner_stack as ref u8,
@@ -2402,14 +2402,14 @@ fn scan_tokens(content: ref u8) ref void = trust {
                 }
             }
             i++
-            col = col + 1
+            col++
             continue
         }
 
         val t: ref ScanToken = scan_tok_new(i, 1, line, col, depth, current_owner, TOK_PUNCT, c)
         scan_token_push(tokens, t)
         i++
-        col = col + 1
+        col++
     }
 
     @free(owner_stack)
@@ -2487,9 +2487,9 @@ fn free_var_candidates(candidates: mut ref void) void = trust {
             val c: ref VarCandidate = @bitcast(v, ref void) as ref VarCandidate
             if c != none {
                 if c.name != none {
-                    @free(c.name as ref void)
+                    @free(c.name)
                 }
-                @free(c as ref void)
+                @free(c)
             }
         }
         i++
@@ -2563,9 +2563,9 @@ pub fn free_unused_variables(vars: ref void) void = trust {
             val u: ref UnusedVariable = @bitcast(v, ref void) as ref UnusedVariable
             if u != none {
                 if u.name != none {
-                    @free(u.name as ref void)
+                    @free(u.name)
                 }
-                @free(u as ref void)
+                @free(u)
             }
         }
         i++
@@ -2642,14 +2642,14 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
                             c.owner = name_tok.owner
                             c.is_public = is_public
                             name_tok.is_decl = 1
-                            val cv: usize = @bitcast(c as ref void, usize)
+                            val cv: usize = @bitcast(c, usize)
                             match coll.PtrList.push[_](alloc, candidates, cv) {
                                 ok _ => {}
                                 err _ => {
                                     if c.name != none {
-                                        @free(c.name as ref void)
+                                        @free(c.name)
                                     }
-                                    @free(c as ref void)
+                                    @free(c)
                                 }
                             }
                         }
@@ -2742,14 +2742,14 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
                         u.name = raw_dup(@ptradd(d.name, 0), str.len_raw(d.name))
                         u.line = d.line
                         u.col = d.col
-                        val uv: usize = @bitcast(u as ref void, usize)
+                        val uv: usize = @bitcast(u, usize)
                         match coll.PtrList.push[_](alloc, result, uv) {
                             ok _ => {}
                             err _ => {
                                 if u.name != none {
-                                    @free(u.name as ref void)
+                                    @free(u.name)
                                 }
-                                @free(u as ref void)
+                                @free(u)
                             }
                         }
                     }

@@ -66,18 +66,18 @@ fn read_message() option[ref u8] = trust {
     for {
         val r: ref u8 = stdio.read_line(line_buf, 4096)
         if r == none {
-            @free(line_buf as ref void)
+            @free(line_buf)
             return none
         }
         val llen: i64 = str.len_raw(line_buf)
         if llen == 0 {
             break
         }
-        if llen == 1 && @load8(line_buf as ref void) == '\n' {
+        if llen == 1 && @load8(line_buf) == '\n' {
             break
         }
         if llen == 2 &&
-        @load8(line_buf as ref void) == '\r' &&
+        @load8(line_buf) == '\r' &&
         @load8(@ptradd(line_buf, 1) as ref void) == '\n' {
             break
         }
@@ -86,7 +86,7 @@ fn read_message() option[ref u8] = trust {
         }
     }
 
-    @free(line_buf as ref void)
+    @free(line_buf)
 
     if content_length <= 0 {
         return none
@@ -119,7 +119,7 @@ fn read_message() option[ref u8] = trust {
     @store8(@ptradd(body, bytes_read), 0)
 
     if bytes_read == 0 {
-        @free(body as ref void)
+        @free(body)
         return none
     }
 
@@ -273,12 +273,12 @@ test {
     val ty: ref u8 = trust handlers.decl_explicit_type(decl)
     assert ty != none
     assert str.raw_cmp(ty, "mut X") == 0
-    trust @free(ty as ref void)
+    trust @free(ty)
 
     val param: ref u8 = trust handlers.extract_param_type("value: ref u8")
     assert param != none
     assert str.raw_cmp(param, "ref u8") == 0
-    trust @free(param as ref void)
+    trust @free(param)
 
     val inferred_decl: ref u8 = "val p = X.new()"
     val init: ref u8 = trust handlers.decl_initializer(inferred_decl)
@@ -288,13 +288,13 @@ test {
     val inferred: ref u8 = trust handlers.infer_expr_type_name(init)
     assert inferred != none
     assert str.raw_cmp(inferred, "X.new") == 0
-    trust @free(init as ref void)
-    trust @free(inferred as ref void)
+    trust @free(init)
+    trust @free(inferred)
 
     val wrapped: ref u8 = trust handlers.infer_expr_type_name("some mod.Type.new(1, 2)")
     assert wrapped != none
     assert str.raw_cmp(wrapped, "mod.Type.new") == 0
-    trust @free(wrapped as ref void)
+    trust @free(wrapped)
 }
 
 test {
