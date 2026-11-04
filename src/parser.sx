@@ -4,14 +4,16 @@ val allocators = use("std/allocators")
 
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
-pub val SYM_FUNCTION: i64 = 0
-pub val SYM_METHOD: i64 = 1
-pub val SYM_TYPE: i64 = 2
-pub val SYM_ENUM: i64 = 3
-pub val SYM_UNION: i64 = 4
-pub val SYM_VARIABLE: i64 = 5
-pub val SYM_MODULE: i64 = 6
-pub val SYM_FIELD: i64 = 7
+pub val (
+    SYM_FUNCTION: i64 = 0
+    SYM_METHOD: i64   = 1
+    SYM_TYPE: i64     = 2
+    SYM_ENUM: i64     = 3
+    SYM_UNION: i64    = 4
+    SYM_VARIABLE: i64 = 5
+    SYM_MODULE: i64   = 6
+    SYM_FIELD: i64    = 7
+)
 
 pub type Symbol = {
     name: mut ref u8
@@ -261,13 +263,11 @@ fn parse_params(params: ref u8, params_len: i64) ref void = trust {
             val c: u8 = @load8(@ptradd(params, i))
             if c == '[' {
                 depth = depth + 1
-            }
-            elif c == ']' {
+            } elif c == ']' {
                 if depth > 0 {
                     depth = depth - 1
                 }
-            }
-            elif c == ',' && depth == 0 {
+            } elif c == ',' && depth == 0 {
                 emit = 1
             }
         }
@@ -377,8 +377,7 @@ fn parse_fn_decl(
             val c: u8 = @load8(@ptradd(rest, i))
             if c == '(' {
                 depth = depth + 1
-            }
-            elif c == ')' {
+            } elif c == ')' {
                 depth = depth - 1
                 if depth == 0 {
                     break
@@ -565,21 +564,17 @@ fn parse_val_decl(
             val c: u8 = @load8(@ptradd(line, i))
             if c == '[' {
                 sq_depth = sq_depth + 1
-            }
-            elif c == ']' {
+            } elif c == ']' {
                 if sq_depth > 0 {
                     sq_depth = sq_depth - 1
                 }
-            }
-            elif c == '(' {
+            } elif c == '(' {
                 paren_depth = paren_depth + 1
-            }
-            elif c == ')' {
+            } elif c == ')' {
                 if paren_depth > 0 {
                     paren_depth = paren_depth - 1
                 }
-            }
-            elif c == '=' && sq_depth == 0 && paren_depth == 0 {
+            } elif c == '=' && sq_depth == 0 && paren_depth == 0 {
                 break
             }
             i++
@@ -810,7 +805,13 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     return syms
 }
 
-pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, out_len: ref i64) void = trust {
+pub fn find_word_at(
+    content: ref u8,
+    line: i64,
+    col: i64,
+    out_start: ref i64,
+    out_len: ref i64
+) void = trust {
     @store(out_start as ref void, -1 as i64)
     @store(out_len as ref void, 0 as i64)
 
@@ -902,7 +903,86 @@ pub fn find_word_at(content: ref u8, line: i64, col: i64, out_start: ref i64, ou
     @store(out_len as ref void, we - ws)
 }
 
-pub fn find_dot_prefix(content: ref u8, word_start: i64, out_mod: ref i64, out_mod_len: ref i64) void = trust {
+/// If the cursor is inside the path string of a `use("...")` import, return
+/// the bounds of the path text (without the surrounding quotes).  This lets
+/// go-to-definition jump from the filename in an import to the imported file
+/// instead of treating it as a normal identifier.
+pub fn find_use_path_at(
+    content: ref u8,
+    line: i64,
+    col: i64,
+    out_start: ref i64,
+    out_len: ref i64
+) void = trust {
+    @store(out_start as ref void, -1 as i64)
+    @store(out_len as ref void, 0 as i64)
+
+    if content == none || line < 0 || col < 0 {
+        return
+    }
+
+    val line_start: mut i64 = -1
+    val line_end: mut i64 = -1
+    line_bounds_raw(content, line, @addr(line_start), @addr(line_end))
+    if line_start < 0 || line_end < 0 {
+        return
+    }
+
+    val line_len: i64 = line_end - line_start
+    val line_ptr: ref u8 = @ptradd(content, line_start)
+    val probe: i64 = col
+    val i: mut i64 = 0
+    for {
+        if i >= line_len {
+            break
+        }
+
+        val c: u8 = @load8(@ptradd(line_ptr, i))
+        if c == '/' && i + 1 < line_len && @load8(@ptradd(line_ptr, i + 1)) == '/' {
+            break
+        }
+
+        val is_use: bool = c == 'u' &&
+        ident_len_at(line_ptr, i, line_len) == 3 &&
+        starts_with_n(@ptradd(line_ptr, i), line_len - i, "use", 3) &&
+        (i == 0 || !is_ident_cont(@load8(@ptradd(line_ptr, i - 1))))
+
+        if is_use {
+            val open_paren: i64 = skip_ws(line_ptr, i + 3, line_len)
+            if open_paren < line_len && @load8(@ptradd(line_ptr, open_paren)) == '(' {
+                val quote: i64 = skip_ws(line_ptr, open_paren + 1, line_len)
+                if quote < line_len && @load8(@ptradd(line_ptr, quote)) == '"' {
+                    val path_start: i64 = quote + 1
+                    val path_end: mut i64 = path_start
+                    for {
+                        if path_end >= line_len {
+                            break
+                        }
+                        if @load8(@ptradd(line_ptr, path_end)) == '"' {
+                            break
+                        }
+                        path_end++
+                    }
+                    if path_end < line_len {
+                        if probe >= quote && probe <= path_end {
+                            @store(out_start as ref void, line_start + path_start)
+                            @store(out_len as ref void, path_end - path_start)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        i++
+    }
+}
+
+pub fn find_dot_prefix(
+    content: ref u8,
+    word_start: i64,
+    out_mod: ref i64,
+    out_mod_len: ref i64
+) void = trust {
     @store(out_mod as ref void, -1 as i64)
     @store(out_mod_len as ref void, 0 as i64)
 
@@ -976,7 +1056,12 @@ fn newline_count_between(s: ref u8, start: i64, end: i64) i64 = trust {
     return n
 }
 
-pub fn line_bounds_raw(content: ref u8, target_line: i64, out_start: ref i64, out_end: ref i64) void = trust {
+pub fn line_bounds_raw(
+    content: ref u8,
+    target_line: i64,
+    out_start: ref i64,
+    out_end: ref i64
+) void = trust {
     @store(out_start as ref void, -1 as i64)
     @store(out_end as ref void, -1 as i64)
     if content == none || target_line < 0 {
@@ -1029,7 +1114,13 @@ pub fn line_bounds_raw(content: ref u8, target_line: i64, out_start: ref i64, ou
     @store(out_end as ref void, end)
 }
 
-fn find_matching_close_raw(s: ref u8, len: i64, open_idx: i64, open_ch: u8, close_ch: u8) i64 = trust {
+fn find_matching_close_raw(
+    s: ref u8,
+    len: i64,
+    open_idx: i64,
+    open_ch: u8,
+    close_ch: u8
+) i64 = trust {
     if s == none || open_idx < 0 || open_idx >= len {
         return -1
     }
@@ -1183,7 +1274,10 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                     val after_name: i64 = skip_ws(trimmed, name_len, tlen)
                     if after_name < tlen && @load8(@ptradd(trimmed, after_name)) == ':' {
                         val type_start: i64 = skip_ws(trimmed, after_name + 1, tlen)
-                        val type_len: i64 = trim_right_len(@ptradd(trimmed, type_start), tlen - type_start)
+                        val type_len: i64 = trim_right_len(
+                            @ptradd(trimmed, type_start),
+                            tlen - type_start
+                        )
                         if type_len > 0 {
                             val field_doc: ref u8 = str.cstr(doc_buf)
                             val field: mut ref Symbol = make_field_sym(
@@ -1193,7 +1287,11 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                             )
                             if field != none {
                                 val fv: usize = @bitcast(field as ref void, usize)
-                                match coll.PtrList.push[allocators.HeapAllocator](alloc, fields, fv) {
+                                match coll.PtrList.push[allocators.HeapAllocator](
+                                    alloc,
+                                    fields,
+                                    fv
+                                ) {
                                     ok _ => {}
                                     err _ => {
                                         sym_free(field, alloc)
@@ -1248,7 +1346,12 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
     return fields
 }
 
-pub fn find_active_call(content: ref u8, line: i64, col: i64, result: mut ref CallContext) void = trust {
+pub fn find_active_call(
+    content: ref u8,
+    line: i64,
+    col: i64,
+    result: mut ref CallContext
+) void = trust {
     result.fn_name = none
     result.param_idx = 0
     result.qualifier = none
@@ -1959,6 +2062,36 @@ test {
     assert str.raw_cmp(j1, "/a/b.sx") == 0
 }
 
+test "use path detection" {
+    val src: ref u8 = "val stdio = use(\"std/stdio\")\nval fle = use(\"../path/to/some/file.sx\")\n// use(\"std/commented\")\n"
+
+    val start: mut i64 = -1
+    val plen: mut i64 = 0
+
+    trust find_use_path_at(src, 0, 20, @addr(start), @addr(plen))
+    assert start == 17
+    assert plen == 9
+
+    trust find_use_path_at(src, 0, 16, @addr(start), @addr(plen))
+    assert start == 17
+    assert plen == 9
+    trust find_use_path_at(src, 0, 26, @addr(start), @addr(plen))
+    assert start == 17
+    assert plen == 9
+
+    trust find_use_path_at(src, 1, 20, @addr(start), @addr(plen))
+    assert start == 44
+    assert plen == 23
+
+    trust find_use_path_at(src, 0, 13, @addr(start), @addr(plen))
+    assert start == -1
+    assert plen == 0
+
+    trust find_use_path_at(src, 2, 12, @addr(start), @addr(plen))
+    assert start == -1
+    assert plen == 0
+}
+
 fn scan_tok_new(
     start: i64, tlen: i64, line: i64, col: i64,
     depth: i64, owner: i64, kind: i64, ch: u8
@@ -2202,7 +2335,16 @@ fn scan_tokens(content: ref u8) ref void = trust {
                 col = col + 1
             }
             val tlen: i64 = i - start
-            val t: ref ScanToken = scan_tok_new(start, tlen, line, start_col, depth, current_owner, TOK_IDENT, 0 as u8)
+            val t: ref ScanToken = scan_tok_new(
+                start,
+                tlen,
+                line,
+                start_col,
+                depth,
+                current_owner,
+                TOK_IDENT,
+                0 as u8
+            )
             scan_token_push(tokens, t)
             if tlen == 2 && strncmp(@ptradd(content, start), "fn", 2 as usize) == 0 {
                 pending_callable = 1
@@ -2253,7 +2395,10 @@ fn scan_tokens(content: ref u8) ref void = trust {
             if depth > 0 {
                 depth = depth - 1
                 if depth < max_depth {
-                    current_owner = @load(@ptradd(owner_stack as ref u8, depth * 8) as ref void) as i64
+                    current_owner = @load(@ptradd(
+                            owner_stack as ref u8,
+                            depth * 8
+                        ) as ref void) as i64
                 }
             }
             i++

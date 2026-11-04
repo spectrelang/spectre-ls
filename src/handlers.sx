@@ -3899,6 +3899,39 @@ pub fn handle_definition(
         send_null_result(id_raw) return
     }
 
+    val use_start: mut i64 = -1
+    val use_len: mut i64 = 0
+    parser.find_use_path_at(content, line, col, @addr(use_start), @addr(use_len))
+    if use_start >= 0 && use_len > 0 {
+        val mod_path: ref u8 = raw_dup_h(@ptradd(content, use_start), use_len)
+        val current_file: ref u8 = parser.uri_to_path(uri)
+        val mod_file: mut ref u8 = none
+        if mod_path != none && current_file != none {
+            mod_file = parser.resolve_module_path(current_file, mod_path)
+        }
+        if mod_file != none {
+            val def_uri: ref u8 = parser.path_to_uri(mod_file)
+            if def_uri != none {
+                send_definition_location(id_raw, def_uri, 0, 0, 0)
+                @free(def_uri as ref void)
+            } else {
+                send_null_result(id_raw)
+            }
+        } else {
+            send_null_result(id_raw)
+        }
+        if mod_file != none {
+            @free(mod_file as ref void)
+        }
+        if current_file != none {
+            @free(current_file as ref void)
+        }
+        if mod_path != none {
+            @free(mod_path as ref void)
+        }
+        return
+    }
+
     val ws: mut i64 = -1
     val wl: mut i64 = 0
     parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
