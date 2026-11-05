@@ -1,9 +1,9 @@
 entry "./src/main.sx"
-version "v0.0.3"
-spectre_version "v0.0.13"
+version "v0.0.4"
+spectre_version "v0.0.14"
 
 build release {
-    flags "--release"
+    flags "-release"
     output "./spectre-ls"
 }
 
