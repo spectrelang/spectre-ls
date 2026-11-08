@@ -742,7 +742,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     val content_len: i64 = str.len_raw(content)
     val pos: mut i64 = 0
     val line_num: mut i64 = 0
-    val doc_buf: mut str.String = str.new()
+    val doc_buf: str.String = str.new()
     val has_doc: mut i64 = 0
     val nesting_depth: mut i64 = 0
 
@@ -1216,7 +1216,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
         return fields
     }
 
-    val doc_buf: mut str.String = str.new()
+    val doc_buf: str.String = str.new()
     val abs_line_start: mut i64 = line_start_at(content, open_idx)
     val cur_line: mut i64 = type_line + newline_count_between(content, ls, open_idx)
     val pos: mut i64 = open_idx + 1
