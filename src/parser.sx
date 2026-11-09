@@ -148,11 +148,11 @@ fn raw_dup_cstr(s: ref u8) ref u8 = trust {
     return raw_dup(s, len)
 }
 
-fn starts_with_n(s: ref u8, s_len: i64, prefix: ref u8, p_len: i64) bool = trust {
+fn starts_with_n(s: ref u8, s_len: i64, prefix: str.StringView, p_len: i64) bool = trust {
     if p_len > s_len || p_len <= 0 {
         return false
     }
-    val r: i32 = strncmp(s, prefix, p_len as usize)
+    val r: i32 = strncmp(s, prefix.ptr, p_len as usize)
     return r == 0
 }
 
@@ -1556,7 +1556,7 @@ pub fn path_to_uri(path: ref u8) ref u8 = trust {
         return none
     }
     val plen: i64 = str.len_raw(path)
-    val prefix: ref u8 = "file://"
+    val prefix: ref u8 = c"file://"
     val pfx_len: i64 = 7
     val total: i64 = pfx_len + plen + 1
     val buf: ref u8 = @alloc(total) as ref u8
@@ -1587,7 +1587,7 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
     }
     val len: i64 = str.len_raw(path)
     if len == 0 {
-        return raw_dup_cstr(".")
+        return raw_dup_cstr(c".")
     }
 
     val end: mut i64 = len
@@ -1615,7 +1615,7 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
         i--
     }
     if i < 0 {
-        return raw_dup_cstr(".")
+        return raw_dup_cstr(c".")
     }
     if i == 0 {
         return raw_dup(path, 1)
@@ -1659,7 +1659,7 @@ fn stdlib_dir_valid(dir: ref u8) bool = trust {
     if dir == none {
         return false
     }
-    val marker: ref u8 = path_join(dir, "stdio/core.sx")
+    val marker: ref u8 = path_join(dir, c"stdio/core.sx")
     if marker == none {
         return false
     }
@@ -1704,7 +1704,8 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
             break
         }
         if iters > 32 {
-            @free(dir) break
+            @free(dir)
+            break
         }
         iters++
 
@@ -1738,7 +1739,8 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
         val same: bool = (str.raw_cmp(parent, dir) == 0)
         @free(dir)
         if same {
-            @free(parent) break
+            @free(parent)
+            break
         }
         dir = parent
     }
@@ -1752,21 +1754,21 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
 /// well, along with the `SPECTRE_STDLIB` / `SPECTRE_ROOT` overrides that the
 /// compiler itself honours.
 pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
-    if os.env("SPECTRE_STDLIB") is some v {
+    if os.env(c"SPECTRE_STDLIB") is some v {
         val direct: ref u8 = raw_dup_cstr(v)
         val found: ref u8 = try_stdlib_dir(direct)
         if found != none {
             return found
         }
-        val nested: ref u8 = path_join(v, "spectrelib")
+        val nested: ref u8 = path_join(v, c"spectrelib")
         val found_nested: ref u8 = try_stdlib_dir(nested)
         if found_nested != none {
             return found_nested
         }
     }
 
-    if os.env("SPECTRE_ROOT") is some v {
-        val nested: ref u8 = path_join(v, "spectrelib")
+    if os.env(c"SPECTRE_ROOT") is some v {
+        val nested: ref u8 = path_join(v, c"spectrelib")
         val found: ref u8 = try_stdlib_dir(nested)
         if found != none {
             return found
@@ -1775,22 +1777,22 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
 
     val exe_dir: ref u8 = find_exe_dir()
     if exe_dir != none {
-        val c1: ref u8 = try_stdlib_dir(path_join(exe_dir, "spectrelib"))
+        val c1: ref u8 = try_stdlib_dir(path_join(exe_dir, c"spectrelib"))
         if c1 != none {
             @free(exe_dir)
             return c1
         }
-        val c2: ref u8 = try_stdlib_dir(path_join(exe_dir, "../share/spectre/spectrelib"))
+        val c2: ref u8 = try_stdlib_dir(path_join(exe_dir, c"../share/spectre/spectrelib"))
         if c2 != none {
             @free(exe_dir)
             return c2
         }
-        val c3: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectre/spectrelib"))
+        val c3: ref u8 = try_stdlib_dir(path_join(exe_dir, c"../lib/spectre/spectrelib"))
         if c3 != none {
             @free(exe_dir)
             return c3
         }
-        val c4: ref u8 = try_stdlib_dir(path_join(exe_dir, "../lib/spectrelib"))
+        val c4: ref u8 = try_stdlib_dir(path_join(exe_dir, c"../lib/spectrelib"))
         if c4 != none {
             @free(exe_dir)
             return c4
@@ -1798,7 +1800,7 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
         @free(exe_dir)
     }
 
-    val cwd_candidate: ref u8 = try_stdlib_dir(raw_dup_cstr("spectrelib"))
+    val cwd_candidate: ref u8 = try_stdlib_dir(raw_dup_cstr(c"spectrelib"))
     if cwd_candidate != none {
         return cwd_candidate
     }
@@ -1853,7 +1855,7 @@ fn clean_path(p: ref u8) ref u8 = trust {
             src = buf
         }
     }
-    val out: ref u8 = pathlib.canonicalize_path(src)
+    val out: ref u8 = pathlib.canonicalize_path(str.view_cstr(src))
     if out == none || out == src {
         return src
     }
@@ -1883,7 +1885,7 @@ fn joined_with_sx(dir: ref u8, name: ref u8) ref u8 = trust {
 }
 
 fn try_module_in_dir(dir: ref u8, mod_path: ref u8, has_sep: bool) ref u8 = trust {
-    val core: ref u8 = existing_path(join3(dir, mod_path, "core.sx"))
+    val core: ref u8 = existing_path(join3(dir, mod_path, c"core.sx"))
     if core != none {
         return core
     }
@@ -1917,7 +1919,7 @@ fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
         }
         limit++
 
-        val marker: ref u8 = path_join(cur, "sx.mod")
+        val marker: ref u8 = path_join(cur, c"sx.mod")
         if marker != none {
             val has_marker: bool = os.exists(marker)
             @free(marker)
@@ -1931,7 +1933,7 @@ fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
             break
         }
         val same: bool = str.raw_cmp(parent, cur) == 0
-        val is_dot: bool = str.raw_cmp(parent, ".") == 0
+        val is_dot: bool = str.raw_cmp(parent, c".") == 0
         if same || is_dot {
             @free(parent)
             break
@@ -1963,7 +1965,7 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         if inner == none {
             return none
         }
-        val result: ref u8 = path_join(inner, "core.sx")
+        val result: ref u8 = path_join(inner, c"core.sx")
         @free(inner)
         return existing_path(result)
     }
@@ -2048,22 +2050,22 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
 }
 
 test {
-    val d1 = trust path_dirname("/a/b/c.sx")
-    val d2 = trust path_dirname("/a/b/")
-    val d3 = trust path_dirname("/")
-    val d4 = trust path_dirname("c.sx")
-    val d5 = trust path_dirname(".")
-    val j1 = trust path_join("/a", "b.sx")
-    assert str.raw_cmp(d1, "/a/b") == 0
-    assert str.raw_cmp(d2, "/a") == 0
-    assert str.raw_cmp(d3, "/") == 0
-    assert str.raw_cmp(d4, ".") == 0
-    assert str.raw_cmp(d5, ".") == 0
-    assert str.raw_cmp(j1, "/a/b.sx") == 0
+    val d1 = trust path_dirname(c"/a/b/c.sx")
+    val d2 = trust path_dirname(c"/a/b/")
+    val d3 = trust path_dirname(c"/")
+    val d4 = trust path_dirname(c"c.sx")
+    val d5 = trust path_dirname(c".")
+    val j1 = trust path_join(c"/a", c"b.sx")
+    assert str.raw_cmp(d1, c"/a/b") == 0
+    assert str.raw_cmp(d2, c"/a") == 0
+    assert str.raw_cmp(d3, c"/") == 0
+    assert str.raw_cmp(d4, c".") == 0
+    assert str.raw_cmp(d5, c".") == 0
+    assert str.raw_cmp(j1, c"/a/b.sx") == 0
 }
 
 test "use path detection" {
-    val src: ref u8 = "val stdio = use(\"std/stdio\")\nval fle = use(\"../path/to/some/file.sx\")\n// use(\"std/commented\")\n"
+    val src: ref u8 = c"val stdio = use(\"std/stdio\")\nval fle = use(\"../path/to/some/file.sx\")\n// use(\"std/commented\")\n"
 
     val start: mut i64 = -1
     val plen: mut i64 = 0
@@ -2346,10 +2348,10 @@ fn scan_tokens(content: ref u8) ref void = trust {
                 0 as u8
             )
             scan_token_push(tokens, t)
-            if tlen == 2 && strncmp(@ptradd(content, start), "fn", 2 as usize) == 0 {
+            if tlen == 2 && strncmp(@ptradd(content, start), c"fn", 2 as usize) == 0 {
                 pending_callable = 1
                 pending_line = line
-            } elif tlen == 4 && strncmp(@ptradd(content, start), "test", 4 as usize) == 0 {
+            } elif tlen == 4 && strncmp(@ptradd(content, start), c"test", 4 as usize) == 0 {
                 pending_callable = 1
                 pending_line = line
             }
@@ -2525,7 +2527,7 @@ fn var_candidate_is_import(
         }
         if t.kind == TOK_PUNCT && t.ch == '=' && t.depth == name_tok.depth {
             val u: ref ScanToken = scan_token_at(tokens, j + 1)
-            if u != none && scan_tok_is_word(content, u, "use", 3) {
+            if u != none && scan_tok_is_word(content, u, c"use", 3) {
                 val p: ref ScanToken = scan_token_at(tokens, j + 2)
                 if p != none && p.kind == TOK_PUNCT && p.ch == '(' {
                     return true
@@ -2619,7 +2621,7 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
             break
         }
         val t: ref ScanToken = scan_token_at(tokens, ti)
-        if t != none && t.kind == TOK_IDENT && scan_tok_is_word(content, t, "val", 3) {
+        if t != none && t.kind == TOK_IDENT && scan_tok_is_word(content, t, c"val", 3) {
             if ti + 1 < n {
                 val name_tok: mut ref ScanToken = scan_token_at(tokens, ti + 1)
                 if name_tok != none && name_tok.kind == TOK_IDENT {
@@ -2628,7 +2630,7 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
                         if ti > 0 {
                             val prev: ref ScanToken = scan_token_at(tokens, ti - 1)
                             if prev != none && prev.line == t.line &&
-                            scan_tok_is_word(content, prev, "pub", 3) {
+                            scan_tok_is_word(content, prev, c"pub", 3) {
                                 is_public = 1
                             }
                         }
@@ -2736,7 +2738,7 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
             val is_used: bool = flags != none && @load8(@ptradd(flags as ref u8, oi as i64)) != 0
             if d != none && d.name != none && !is_used {
                 val is_public_global: bool = d.owner == 0 && d.is_public == 1
-                if !is_public_global && str.raw_cmp(d.name, "_") != 0 {
+                if !is_public_global && str.raw_cmp(d.name, c"_") != 0 {
                     val u: mut ref UnusedVariable = unused_variable_alloc()
                     if u != none {
                         u.name = raw_dup(@ptradd(d.name, 0), str.len_raw(d.name))
@@ -2768,7 +2770,7 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
 }
 
 test {
-    val src: ref u8 = "val used_top = 1\nval unused_top = 2\n\nfn f() void = {\n    val used_local = used_top\n    val unused_local = 3\n    trust @print(\"{d}\", {used_local})\n}\n"
+    val src: ref u8 = c"val used_top = 1\nval unused_top = 2\n\nfn f() void = {\n    val used_local = used_top\n    val unused_local = 3\n    trust @print(\"{d}\", {used_local})\n}\n"
     val vars: mut ref void = trust find_unused_variables(src)
     assert vars != none
     assert coll.PtrList.len(vars) == 2
@@ -2782,10 +2784,10 @@ test {
         }
         if coll.PtrList.get(vars, i) is some v {
             val u: ref UnusedVariable = trust @bitcast(v, ref void) as ref UnusedVariable
-            if str.raw_cmp(u.name, "unused_top") == 0 {
+            if str.raw_cmp(u.name, c"unused_top") == 0 {
                 saw_top = u.line == 1
             }
-            if str.raw_cmp(u.name, "unused_local") == 0 {
+            if str.raw_cmp(u.name, c"unused_local") == 0 {
                 saw_local = u.line == 5
             }
         }
@@ -2797,7 +2799,7 @@ test {
 }
 
 test {
-    val src: ref u8 = "val used = 1\nval _ = 2\npub val exported = 3\nval io = use(\"std/stdio\")\nfn f() void = {\n    val s = \"unused text\"\n    // used in a comment\n    trust @print(\"{s}\", {s + used})\n}\n"
+    val src: ref u8 = c"val used = 1\nval _ = 2\npub val exported = 3\nval io = use(\"std/stdio\")\nfn f() void = {\n    val s = \"unused text\"\n    // used in a comment\n    trust @print(\"{s}\", {s + used})\n}\n"
     val vars: mut ref void = trust find_unused_variables(src)
     assert vars != none
     assert coll.PtrList.len(vars) == 0
@@ -2805,16 +2807,16 @@ test {
 }
 
 test {
-    val src: ref u8 = "val obj = make()\nfn f() void = {\n    obj.run(1, other(2, 3), [4, 5])\n}\n"
+    val src: ref u8 = c"val obj = make()\nfn f() void = {\n    obj.run(1, other(2, 3), [4, 5])\n}\n"
     val ctx_mem: ref void = @alloc(@sizeof(CallContext))
     assert ctx_mem != none
     trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 2, 26, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, "run") == 0
+    assert str.raw_cmp(ctx.fn_name, c"run") == 0
     assert ctx.qualifier != none
-    assert str.raw_cmp(ctx.qualifier, "obj") == 0
+    assert str.raw_cmp(ctx.qualifier, c"obj") == 0
     assert ctx.param_idx == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2826,16 +2828,16 @@ test {
 }
 
 test {
-    val src: ref u8 = "mod.Type.build(1, 2, 3)\n"
+    val src: ref u8 = c"mod.Type.build(1, 2, 3)\n"
     val ctx_mem: ref void = @alloc(@sizeof(CallContext))
     assert ctx_mem != none
     trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 0, 18, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, "build") == 0
+    assert str.raw_cmp(ctx.fn_name, c"build") == 0
     assert ctx.qualifier != none
-    assert str.raw_cmp(ctx.qualifier, "mod.Type") == 0
+    assert str.raw_cmp(ctx.qualifier, c"mod.Type") == 0
     assert ctx.param_idx == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2847,14 +2849,14 @@ test {
 }
 
 test {
-    val src: ref u8 = "val p = trust @alloc(size)\n"
+    val src: ref u8 = c"val p = trust @alloc(size)\n"
     val ctx_mem: ref void = @alloc(@sizeof(CallContext))
     assert ctx_mem != none
     trust @memset(ctx_mem, 0, @sizeof(CallContext) as usize)
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 0, 23, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, "alloc") == 0
+    assert str.raw_cmp(ctx.fn_name, c"alloc") == 0
     assert ctx.is_intrinsic == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2866,8 +2868,8 @@ test {
 }
 
 test {
-    val src: ref u8 = "/// strlen docs\nextern (C) fn strlen(s: ref u8) i64 = \"strlen\"\n\nextern type Rect = {\n    x: i32\n}\n\nwhen linux {\n    extern (C) fn uname(buf: ref Rect) i32 = \"uname\"\n}\n"
-    val syms: mut ref void = trust parse_file("extern_test.sx", src)
+    val src: ref u8 = c"/// strlen docs\nextern (C) fn strlen(s: ref u8) i64 = \"strlen\"\n\nextern type Rect = {\n    x: i32\n}\n\nwhen linux {\n    extern (C) fn uname(buf: ref Rect) i32 = \"uname\"\n}\n"
+    val syms: mut ref void = trust parse_file(c"extern_test.sx", src)
     assert syms != none
     assert coll.PtrList.len(syms) == 3
 
@@ -2881,13 +2883,13 @@ test {
         }
         if coll.PtrList.get(syms, i) is some v {
             val sym: ref Symbol = trust @bitcast(v, ref void) as ref Symbol
-            if str.raw_cmp(sym.name, "strlen") == 0 {
+            if str.raw_cmp(sym.name, c"strlen") == 0 {
                 saw_strlen = sym.kind == SYM_FUNCTION && sym.col == 14
             }
-            if str.raw_cmp(sym.name, "Rect") == 0 {
+            if str.raw_cmp(sym.name, c"Rect") == 0 {
                 saw_rect = sym.kind == SYM_TYPE && sym.col == 12
             }
-            if str.raw_cmp(sym.name, "uname") == 0 {
+            if str.raw_cmp(sym.name, c"uname") == 0 {
                 saw_uname = sym.kind == SYM_FUNCTION && sym.col == 18
             }
         }
