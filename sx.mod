@@ -10,3 +10,4 @@ build release {
 build dev {
     output "./spectre-ls-dev"
 }
+dep "https://github.com/spectrelang/spectre.git"

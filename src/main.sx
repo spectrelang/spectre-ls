@@ -4,10 +4,40 @@ val str        = use("std/string")
 val cstr       = use("std/string/cstr")
 val allocators = use("std/allocators")
 val handlers   = use("./handlers")
-val parser     = use("./parser")
+val lsp_parser = use("./parser")
 val json       = use("std/json")
+val time       = use("std/time")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
+extern (C) fn setvbuf(stream: ref void, buf: ref u8, mode: i32, size: usize) i32 = "setvbuf"
+
+type PollFd = {
+    fd: mut i32
+    events: mut i16
+    revents: mut i16
+}
+
+when posix {
+    extern (C) fn poll(fds: ref PollFd, nfds: u64, timeout: i32) i32 = "poll"
+}
+
+/// Wait for stdin activity, or for the debounce timeout to expire.
+fn wait_for_input(timeout_ms: i32) i32 = trust {
+    val result: mut i32 = 1
+    when posix {
+        val pfd: mut PollFd = @zeroed
+        pfd.fd = 0
+        pfd.events = 1
+        pfd.revents = 0
+        result = poll(@addr(pfd), 1 as u64, timeout_ms)
+    }
+    when windows {
+        if timeout_ms == 0 {
+            result = 0
+        }
+    }
+    return result
+}
 
 val g_doc_store: mut ref void = none
 val g_sym_store: mut ref void = none
@@ -129,7 +159,37 @@ pub fn main() void = trust {
         return
     }
 
+    // Unbuffered stdin keeps `poll` in sync with the bytes we still have to
+    // consume; otherwise stdio may read subsequent messages ahead of us.
+    when posix {
+        setvbuf(@stdin(), none, 2 as i32, 0 as usize)
+    }
+
     for {
+        val due: i64 = handlers.pending_due_ns()
+        val timeout: mut i32 = -1
+        if due > 0 {
+            val now: i64 = time.now_ns()
+            if now >= due {
+                handlers.run_pending_check(g_doc_store)
+            } else {
+                val remain: i64 = due - now
+                val ms: i64 = (remain + 999999) / 1000000
+                timeout = ms as i32
+                if timeout < 1 {
+                    timeout = 1
+                }
+            }
+        }
+
+        val ready: i32 = wait_for_input(timeout)
+        if ready == 0 {
+            continue
+        }
+        if ready < 0 {
+            break
+        }
+
         val msg_opt = read_message()
         match msg_opt {
             none => {
@@ -153,22 +213,22 @@ test {
     val wl: mut i64 = 0
 
     // Cursor in the middle of a word.
-    trust parser.find_word_at(src, 0, 8, @addr(ws), @addr(wl))
+    trust lsp_parser.find_word_at(src, 0, 8, @addr(ws), @addr(wl))
     assert ws == 4
     assert wl == 10
 
     // Cursor immediately after a word (common from editors) still resolves it.
-    trust parser.find_word_at(src, 0, 14, @addr(ws), @addr(wl))
+    trust lsp_parser.find_word_at(src, 0, 14, @addr(ws), @addr(wl))
     assert ws == 4
     assert wl == 10
 
     // Cursor on the dot resolves the name on the left.
-    trust parser.find_word_at(src, 1, 10, @addr(ws), @addr(wl))
+    trust lsp_parser.find_word_at(src, 1, 10, @addr(ws), @addr(wl))
     assert ws == 28
     assert wl == 10
 
     // Field name on the second line.
-    trust parser.find_word_at(src, 1, 11, @addr(ws), @addr(wl))
+    trust lsp_parser.find_word_at(src, 1, 11, @addr(ws), @addr(wl))
     assert ws == 39
     assert wl == 1
 }
@@ -177,19 +237,19 @@ test {
     val src: ref u8 = c"outer.inner.z"
     val ws: mut i64 = -1
     val wl: mut i64 = 0
-    trust parser.find_word_at(src, 0, 12, @addr(ws), @addr(wl))
+    trust lsp_parser.find_word_at(src, 0, 12, @addr(ws), @addr(wl))
     assert ws == 12
     assert wl == 1
 
     val ms: mut i64 = -1
     val ml: mut i64 = 0
-    trust parser.find_dot_prefix(src, ws, @addr(ms), @addr(ml))
+    trust lsp_parser.find_dot_prefix(src, ws, @addr(ms), @addr(ml))
     assert ms == 0
     assert ml == 11
 
     val src2: ref u8 = c"m.Point"
-    trust parser.find_word_at(src2, 0, 3, @addr(ws), @addr(wl))
-    trust parser.find_dot_prefix(src2, ws, @addr(ms), @addr(ml))
+    trust lsp_parser.find_word_at(src2, 0, 3, @addr(ws), @addr(wl))
+    trust lsp_parser.find_dot_prefix(src2, ws, @addr(ms), @addr(ml))
     assert ms == 0
     assert ml == 1
 }
@@ -197,13 +257,13 @@ test {
 test {
     val content: ref u8 = c"type Point = {\n    /// horizontal coordinate\n    x: i32\n    y: mut f64\n    invariant { x > 0 }\n}\n"
 
-    val fields: mut ref void = trust parser.parse_type_fields(content, c"test.sx", 0)
+    val fields: mut ref void = trust lsp_parser.parse_type_fields(content, c"test.sx", 0)
     assert fields != none
     assert coll.PtrList.len(fields) == 2
 
     match coll.PtrList.get(fields, 0 as usize) {
         some v => {
-            val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
+            val f: ref lsp_parser.Symbol = trust @bitcast(v, ref void) as ref lsp_parser.Symbol
             assert cstr.cmp(f.name, c"x") == 0
             assert cstr.cmp(f.ret_type, c"i32") == 0
             assert f.line == 2
@@ -217,7 +277,7 @@ test {
 
     match coll.PtrList.get(fields, 1 as usize) {
         some v => {
-            val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
+            val f: ref lsp_parser.Symbol = trust @bitcast(v, ref void) as ref lsp_parser.Symbol
             assert cstr.cmp(f.name, c"y") == 0
             assert cstr.cmp(f.ret_type, c"mut f64") == 0
         }
@@ -225,7 +285,7 @@ test {
             assert false
         }
     }
-    trust parser.free_sym_list(fields)
+    trust lsp_parser.free_sym_list(fields)
 }
 
 test "keyword detection" {

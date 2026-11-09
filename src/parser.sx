@@ -1963,9 +1963,17 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         if inner == none {
             return none
         }
-        val result: ref u8 = path_join(inner, c"core.sx")
+        val core_path: ref u8 = path_join(inner, c"core.sx")
+        val core_found: ref u8 = existing_path(core_path)
+        if core_found != none {
+            @free(inner)
+            return core_found
+        }
+        // `std/foo/bar` may be a file (`bar.sx`) rather than a directory
+        // containing `core.sx`, e.g. `std/string/cstr`.
+        val file_path: ref u8 = with_sx_suffix(inner)
         @free(inner)
-        return existing_path(result)
+        return existing_path(file_path)
     }
 
     val file_dir: ref u8 = path_dirname(current_file)

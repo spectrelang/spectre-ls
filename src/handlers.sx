@@ -6,10 +6,18 @@ val allocators = use("std/allocators")
 val coll       = use("std/collections")
 val json       = use("std/json")
 val fs         = use("std/fs")
-val parser     = use("./parser")
+val path       = use("std/path")
+val time       = use("std/time")
+val lsp_parser = use("./parser")
+val checker    = use("./checker")
 
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 extern (C) fn write(fd: i32, buf: ref void, count: usize) i64 = "write"
+
+/// Debounced type-check state.  `didChange` only updates the document store
+/// and records a deadline; the main loop runs the check once typing pauses.
+val g_pending_uri: mut ref u8 = none
+val g_pending_due: mut i64 = 0
 
 fn owned_view(s: str.String) str.StringView = trust {
     if s == none {
@@ -202,6 +210,157 @@ pub fn send_error(id_raw: ref void, code: i64, msg: ref u8) void = trust {
     builder.StringBuilder.free(sb)
 }
 
+fn emit_diag_comma(sb: builder.StringBuilder, first: ref i64) void = trust {
+    if @load(first) == 1 {
+        @store(first, 0 as i64)
+    } else {
+        builder.StringBuilder.append(sb, ",")
+    }
+}
+
+fn compiler_diag_is_warning(msg: str.StringView) bool = trust {
+    return str.contains(msg, "declared but never used") ||
+    str.contains(msg, "declared mutable but never mutated") ||
+    str.contains(msg, "unused function") ||
+    str.contains(msg, "is never used")
+}
+
+fn append_one_compiler_diag(
+    sb: builder.StringBuilder,
+    first: ref i64,
+    content: ref u8,
+    canon_file: str.StringView,
+    line: str.StringView
+) void = trust {
+    if !str.starts_with(line, canon_file) {
+        return
+    }
+    val pos: i64 = canon_file.len
+    if pos >= line.len || @load8(@ptradd(line.ptr, pos)) != ':' {
+        return
+    }
+
+    val nstart: i64 = pos + 1
+    val j: mut i64 = nstart
+    val line_no: mut i64 = 0
+    for {
+        if j >= line.len {
+            break
+        }
+        val c: u8 = @load8(@ptradd(line.ptr, j))
+        if c == ':' {
+            break
+        }
+        if c < '0' || c > '9' {
+            return
+        }
+        line_no = line_no * 10 + (c as i64 - 48)
+        j++
+    }
+    if j <= nstart || j >= line.len {
+        return
+    }
+
+    val after: i64 = j + 1
+    val mstart: mut i64 = after
+    if mstart < line.len && @load8(@ptradd(line.ptr, mstart)) == ' ' {
+        mstart++
+    }
+    if mstart >= line.len {
+        return
+    }
+    val msg: str.StringView = str.slice(line, mstart, line.len)
+    if str.is_empty(msg) {
+        return
+    }
+
+    // The lightweight unused-variable pass above already reports these with
+    // an exact identifier range, so avoid a duplicate whole-line diagnostic.
+    if str.contains(msg, "variable '") &&
+    str.contains(msg, "declared but never used") {
+        return
+    }
+
+    val display_line: mut i64 = line_no
+    if display_line < 1 {
+        display_line = 1
+    }
+    val start: mut i64 = -1
+    val end: mut i64 = -1
+    lsp_parser.line_bounds_raw(
+        content,
+        display_line - 1,
+        @addr(start),
+        @addr(end)
+    )
+    val ce: mut i64 = 0
+    if start >= 0 && end >= start {
+        ce = end - start
+    }
+
+    val warning: bool = compiler_diag_is_warning(msg)
+    emit_diag_comma(sb, first)
+    builder.StringBuilder.append(sb, "{\"range\":")
+    append_range(sb, display_line - 1, 0, ce)
+    builder.StringBuilder.append(sb, ",\"severity\":")
+    if warning {
+        sb_append_int(sb, 2)
+    } else {
+        sb_append_int(sb, 1)
+    }
+    builder.StringBuilder.append(sb, ",\"source\":\"spectre-ls\",\"code\":\"")
+    if str.contains(msg, "declared but never used") {
+        builder.StringBuilder.append(sb, "unused-variable")
+    } elif str.contains(msg, "declared mutable but never mutated") {
+        builder.StringBuilder.append(sb, "unused-mut")
+    } elif str.contains(msg, "unused function") {
+        builder.StringBuilder.append(sb, "unused-function")
+    } elif str.contains(msg, "is never used") {
+        builder.StringBuilder.append(sb, "unused-import")
+    } else {
+        builder.StringBuilder.append(sb, "type-error")
+    }
+    builder.StringBuilder.append(sb, "\",\"message\":\"")
+    sb_escape(sb, msg)
+    builder.StringBuilder.append(sb, "\"}")
+}
+
+fn append_compiler_diagnostics(
+    sb: builder.StringBuilder,
+    first: ref i64,
+    content: ref u8,
+    canon_file: ref u8,
+    diags: str.String
+) void = trust {
+    if canon_file == none || diags == none {
+        return
+    }
+    val total: i64 = ostr.len(diags)
+    if total <= 0 {
+        return
+    }
+    val raw: ref u8 = ostr.as_cstr(diags)
+    if raw == none {
+        return
+    }
+    val canon_view: str.StringView = str.from_cstr(canon_file)
+    val i: mut i64 = 0
+    val start: mut i64 = 0
+    for {
+        if i > total {
+            break
+        }
+        if i == total || @load8(@ptradd(raw, i)) == '\n' {
+            if i > start {
+                val line: str.StringView = str.view(@ptradd(raw, start), i - start)
+                append_one_compiler_diag(sb, first, content, canon_view, line)
+            }
+            start = i + 1
+        }
+        i++
+    }
+}
+
 fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
     if uri == none || content == none {
         return
@@ -215,26 +374,23 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
     sb_escape_cstr(sb, uri)
     builder.StringBuilder.append(sb, "\",\"diagnostics\":[")
 
-    val vars: ref void = parser.find_unused_variables(content)
+    val first: mut i64 = 1
+
+    val vars: ref void = lsp_parser.find_unused_variables(content)
     if vars != none {
         val n: usize = coll.PtrList.len(vars)
         val i: mut usize = 0
-        val first: mut i64 = 1
         for {
             if i >= n {
                 break
             }
             if coll.PtrList.get(vars, i) is some v {
-                val u: ref parser.UnusedVariable = @bitcast(
+                val u: ref lsp_parser.UnusedVariable = @bitcast(
                     v,
                     ref void
-                ) as ref parser.UnusedVariable
+                ) as ref lsp_parser.UnusedVariable
                 if u != none && u.name != none {
-                    if first == 1 {
-                        first = 0
-                    } else {
-                        builder.StringBuilder.append(sb, ",")
-                    }
+                    emit_diag_comma(sb, @addr(first))
                     val nlen: i64 = cstr.len(u.name)
                     builder.StringBuilder.append(sb, "{\"range\":")
                     append_range(sb, u.line, u.col, u.col + nlen)
@@ -248,7 +404,33 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
             }
             i++
         }
-        parser.free_unused_variables(vars)
+        lsp_parser.free_unused_variables(vars)
+    }
+
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
+    if file_path != none {
+        val canon_opt: ref u8 = path.canonicalize_path_cstr(file_path)
+        val canon_file: mut ref u8 = file_path
+        if canon_opt != none {
+            canon_file = canon_opt
+        }
+        val diags: str.String = checker.typecheck(file_path, content)
+        if diags != none && ostr.len(diags) > 0 {
+            append_compiler_diagnostics(
+                sb,
+                @addr(first),
+                content,
+                canon_file,
+                diags
+            )
+        }
+        if diags != none {
+            ostr.free(diags)
+        }
+        if canon_opt != none && canon_opt != file_path {
+            @free(canon_opt)
+        }
+        @free(file_path)
     }
 
     builder.StringBuilder.append(sb, "]}}")
@@ -262,7 +444,10 @@ pub fn handle_initialize(id_raw: ref void) void = trust {
     val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
     builder.StringBuilder.append(sb, ",\"result\":{\"capabilities\":{")
-    builder.StringBuilder.append(sb, "\"textDocumentSync\":1,")
+    builder.StringBuilder.append(
+        sb,
+        "\"textDocumentSync\":{\"openClose\":true,\"change\":1,\"save\":true},"
+    )
     builder.StringBuilder.append(sb, "\"hoverProvider\":true,")
     builder.StringBuilder.append(sb, "\"definitionProvider\":true,")
     builder.StringBuilder.append(sb, "\"documentSymbolProvider\":true,")
@@ -322,7 +507,7 @@ fn get_obj_field(obj: ref void, key: str.StringView) ref void = trust {
     }
 }
 
-fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust {
+fn find_sym_by_name(sym_list: ref void, name: ref u8) ref lsp_parser.Symbol = trust {
     if sym_list == none || name == none {
         return none
     }
@@ -333,7 +518,7 @@ fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust 
             break
         }
         if coll.PtrList.get(sym_list, i) is some v {
-            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
             if sym != none && sym.name != none {
                 if cstr.cmp(sym.name, name) == 0 {
                     return sym
@@ -345,7 +530,7 @@ fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust 
     return none
 }
 
-fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust {
+fn find_import_sym(sym_list: ref void, alias: ref u8) ref lsp_parser.Symbol = trust {
     if sym_list == none || alias == none {
         return none
     }
@@ -356,8 +541,8 @@ fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust 
             break
         }
         if coll.PtrList.get(sym_list, i) is some v {
-            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-            if sym != none && sym.kind == parser.SYM_MODULE &&
+            val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
+            if sym != none && sym.kind == lsp_parser.SYM_MODULE &&
             sym.name != none && cstr.cmp(sym.name, alias) == 0 {
                 return sym
             }
@@ -421,23 +606,23 @@ fn param_name_eq(param_decl: ref u8, word: ref u8) bool = trust {
     return strncmp(@ptradd(param_decl, i), word, nlen as usize) == 0
 }
 
-fn find_enclosing_callable(sym_list: ref void, line: i64) ref parser.Symbol = trust {
+fn find_enclosing_callable(sym_list: ref void, line: i64) ref lsp_parser.Symbol = trust {
     if sym_list == none {
         return none
     }
     val n: usize = coll.PtrList.len(sym_list)
     val i: mut usize = 0
     val best_line: mut i64 = -1
-    val best: mut ref parser.Symbol = none
+    val best: mut ref lsp_parser.Symbol = none
 
     for {
         if i >= n {
             break
         }
         if coll.PtrList.get(sym_list, i) is some v {
-            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
             if sym != none &&
-            (sym.kind == parser.SYM_FUNCTION || sym.kind == parser.SYM_METHOD) &&
+            (sym.kind == lsp_parser.SYM_FUNCTION || sym.kind == lsp_parser.SYM_METHOD) &&
             sym.line <= line && sym.line >= best_line {
                 best = sym
                 best_line = sym.line
@@ -466,7 +651,7 @@ fn lookup_parameter_decl(
         return none
     }
 
-    val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
+    val fn_sym: ref lsp_parser.Symbol = find_enclosing_callable(cur_syms, line)
     if fn_sym == none || fn_sym.params == none {
         return none
     }
@@ -493,7 +678,7 @@ fn ensure_parsed(doc_store: ref void, sym_store: ref void, file_path: ref u8) vo
     if file_path == none || sym_store == none || doc_store == none {
         return
     }
-    val uri: ref u8 = parser.path_to_uri(file_path)
+    val uri: ref u8 = lsp_parser.path_to_uri(file_path)
     val alloc: allocators.HeapAllocator = @zeroed
 
     if uri == none {
@@ -509,7 +694,7 @@ fn ensure_parsed(doc_store: ref void, sym_store: ref void, file_path: ref u8) vo
             val cv: usize = @bitcast(content, usize)
             coll.StringMap.set[_](alloc, doc_store, uri, cv)
         }
-        val syms: ref void = parser.parse_file(file_path, content)
+        val syms: ref void = lsp_parser.parse_file(file_path, content)
         if syms != none {
             val sv: usize = @bitcast(syms, usize)
             coll.StringMap.set[_](alloc, sym_store, uri, sv)
@@ -527,7 +712,7 @@ fn lookup_symbol(
     current_file: ref u8,
     word: ref u8,
     module_alias: ref u8
-) ref parser.Symbol = trust {
+) ref lsp_parser.Symbol = trust {
     if word == none {
         return none
     }
@@ -541,16 +726,16 @@ fn lookup_symbol(
         if cur_syms == none {
             return none
         }
-        val imp: ref parser.Symbol = find_import_sym(cur_syms, module_alias)
+        val imp: ref lsp_parser.Symbol = find_import_sym(cur_syms, module_alias)
         if imp == none || imp.ret_type == none {
             return none
         }
-        val mod_file: ref u8 = parser.resolve_module_path(current_file, imp.ret_type)
+        val mod_file: ref u8 = lsp_parser.resolve_module_path(current_file, imp.ret_type)
         if mod_file == none {
             return none
         }
         ensure_parsed(doc_store, sym_store, mod_file)
-        val mod_uri: ref u8 = parser.path_to_uri(mod_file)
+        val mod_uri: ref u8 = lsp_parser.path_to_uri(mod_file)
         @free(mod_file)
         if mod_uri == none {
             return none
@@ -567,7 +752,7 @@ fn lookup_symbol(
     }
 
     if cur_syms != none {
-        val found: ref parser.Symbol = find_sym_by_name(cur_syms, word)
+        val found: ref lsp_parser.Symbol = find_sym_by_name(cur_syms, word)
         if found != none {
             return found
         }
@@ -1632,7 +1817,7 @@ fn resolve_type_symbol(
     current_file: ref u8,
     type_expr: ref u8,
     depth: i64
-) ref parser.Symbol = trust {
+) ref lsp_parser.Symbol = trust {
     if type_expr == none || depth > 8 {
         return none
     }
@@ -1683,7 +1868,7 @@ fn resolve_type_symbol(
         }
     }
 
-    val sym: mut ref parser.Symbol = none
+    val sym: mut ref lsp_parser.Symbol = none
     if last_dot > 0 && last_dot + 1 < elen {
         val alias: ref u8 = raw_dup_h(expr, last_dot)
         val name: ref u8 = raw_dup_h(@ptradd(expr, last_dot + 1), elen - last_dot - 1)
@@ -1699,7 +1884,7 @@ fn resolve_type_symbol(
     }
 
     if sym != none {
-        if sym.kind == parser.SYM_TYPE || sym.kind == parser.SYM_ENUM || sym.kind == parser.SYM_UNION {
+        if sym.kind == lsp_parser.SYM_TYPE || sym.kind == lsp_parser.SYM_ENUM || sym.kind == lsp_parser.SYM_UNION {
             @free(expr)
             return sym
         }
@@ -1709,11 +1894,11 @@ fn resolve_type_symbol(
             val follow_file: mut ref u8 = current_file
             if sym_file != none {
                 follow_file = sym_file
-                sym_uri = parser.path_to_uri(sym_file)
+                sym_uri = lsp_parser.path_to_uri(sym_file)
             } else {
                 sym_uri = raw_dup_cstr_h(current_uri)
             }
-            val followed: ref parser.Symbol = resolve_type_symbol(
+            val followed: ref lsp_parser.Symbol = resolve_type_symbol(
                 doc_store, sym_store, sym_uri, follow_file, sym.ret_type, depth + 1
             )
             if sym_uri != none {
@@ -1728,7 +1913,7 @@ fn resolve_type_symbol(
 
     if last_dot > 0 {
         val base: ref u8 = raw_dup_h(expr, last_dot)
-        val followed: ref parser.Symbol = resolve_type_symbol(
+        val followed: ref lsp_parser.Symbol = resolve_type_symbol(
             doc_store, sym_store, current_uri, current_file, base, depth + 1
         )
         if base != none {
@@ -1813,9 +1998,9 @@ fn lookup_variable_type_expr(
     if current_uri != none {
         if coll.StringMap.get(sym_store, current_uri) is some v {
             val cur_syms: ref void = @bitcast(v, ref void)
-            val sym: ref parser.Symbol = find_sym_by_name(cur_syms, name)
+            val sym: ref lsp_parser.Symbol = find_sym_by_name(cur_syms, name)
             if sym != none && sym.ret_type != none {
-                val followed: ref parser.Symbol = resolve_type_symbol(
+                val followed: ref lsp_parser.Symbol = resolve_type_symbol(
                     doc_store, sym_store, current_uri, current_file, sym.ret_type, depth + 1
                 )
                 if followed != none {
@@ -1830,7 +2015,7 @@ fn lookup_variable_type_expr(
 fn fields_for_type(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    type_sym: ref parser.Symbol
+    type_sym: ref lsp_parser.Symbol
 ) ref void = trust {
     if type_sym == none || type_sym.file == none {
         return none
@@ -1840,7 +2025,7 @@ fn fields_for_type(
     if content == none {
         return none
     }
-    return parser.parse_type_fields(content, type_sym.file, type_sym.line)
+    return lsp_parser.parse_type_fields(content, type_sym.file, type_sym.line)
 }
 
 fn method_receiver_matches(receiver: ref u8, type_name: ref u8) bool = trust {
@@ -1878,7 +2063,7 @@ fn sym_list_for_file(
     if file == none {
         return none
     }
-    val uri: ref u8 = parser.path_to_uri(file)
+    val uri: ref u8 = lsp_parser.path_to_uri(file)
     if uri == none {
         return none
     }
@@ -2011,7 +2196,7 @@ fn lookup_local_variable_decl(
         return none
     }
 
-    val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
+    val fn_sym: ref lsp_parser.Symbol = find_enclosing_callable(cur_syms, line)
     if fn_sym == none {
         return none
     }
@@ -2231,7 +2416,7 @@ fn get_content_for_file(doc_store: ref void, file_path: ref u8) ref u8 = trust {
     if doc_store == none || file_path == none {
         return none
     }
-    val uri: ref u8 = parser.path_to_uri(file_path)
+    val uri: ref u8 = lsp_parser.path_to_uri(file_path)
     if uri == none {
         return none
     }
@@ -2352,7 +2537,7 @@ fn contains_substr_h(s: str.StringView, needle: str.StringView) bool = trust {
 fn estimate_type_symbol_size(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    sym: ref parser.Symbol,
+    sym: ref lsp_parser.Symbol,
     depth: i64
 ) i64 = trust {
     if sym == none {
@@ -2361,10 +2546,10 @@ fn estimate_type_symbol_size(
     if depth > 8 {
         return 8
     }
-    if sym.kind == parser.SYM_ENUM {
+    if sym.kind == lsp_parser.SYM_ENUM {
         return 8
     }
-    if sym.kind != parser.SYM_TYPE && sym.kind != parser.SYM_UNION {
+    if sym.kind != lsp_parser.SYM_TYPE && sym.kind != lsp_parser.SYM_UNION {
         return 8
     }
 
@@ -2397,12 +2582,12 @@ fn estimate_type_symbol_size(
         return 8
     }
 
-    val current_uri_for_sym: ref u8 = parser.path_to_uri(sym.file)
+    val current_uri_for_sym: ref u8 = lsp_parser.path_to_uri(sym.file)
     val body: ref u8 = @ptradd(def, open_idx + 1)
     val body_len: i64 = close_idx - open_idx - 1
     val result: mut i64 = 0
 
-    if sym.kind == parser.SYM_UNION {
+    if sym.kind == lsp_parser.SYM_UNION {
         val max_payload: mut i64 = 0
         val seg_start: mut i64 = 0
         val sq_depth: mut i64 = 0
@@ -2789,7 +2974,7 @@ fn estimate_type_expr_size(
         lookup_name = raw_dup_cstr_h(expr)
     }
 
-    val resolved: ref parser.Symbol = lookup_symbol(
+    val resolved: ref lsp_parser.Symbol = lookup_symbol(
         doc_store, sym_store, current_uri, current_file, lookup_name, lookup_alias
     )
     if lookup_name != none {
@@ -2812,7 +2997,7 @@ fn append_type_hover_contents(
     sym_store: mut ref void,
     _: ref u8,
     _: ref u8,
-    sym: ref parser.Symbol
+    sym: ref lsp_parser.Symbol
 ) void = trust {
     if sym == none {
         return
@@ -2857,11 +3042,11 @@ fn append_builtin_type_hover_contents(sb: builder.StringBuilder, word: ref u8) v
     builder.StringBuilder.append(sb, " bytes")
 }
 
-fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trust {
+fn symbol_is_unverified(doc_store: ref void, sym: ref lsp_parser.Symbol) bool = trust {
     if doc_store == none || sym == none || sym.file == none || sym.line < 0 {
         return false
     }
-    if sym.kind != parser.SYM_FUNCTION && sym.kind != parser.SYM_METHOD {
+    if sym.kind != lsp_parser.SYM_FUNCTION && sym.kind != lsp_parser.SYM_METHOD {
         return false
     }
     val content: ref u8 = get_content_for_file(doc_store, sym.file)
@@ -2893,25 +3078,25 @@ fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trus
 }
 
 fn sym_kind_to_lsp(kind: i64) i64 = {
-    if kind == parser.SYM_FUNCTION {
+    if kind == lsp_parser.SYM_FUNCTION {
         return 12
     }
-    if kind == parser.SYM_METHOD {
+    if kind == lsp_parser.SYM_METHOD {
         return 6
     }
-    if kind == parser.SYM_TYPE {
+    if kind == lsp_parser.SYM_TYPE {
         return 23
     }
-    if kind == parser.SYM_ENUM {
+    if kind == lsp_parser.SYM_ENUM {
         return 10
     }
-    if kind == parser.SYM_UNION {
+    if kind == lsp_parser.SYM_UNION {
         return 23
     }
-    if kind == parser.SYM_MODULE {
+    if kind == lsp_parser.SYM_MODULE {
         return 2
     }
-    if kind == parser.SYM_FIELD {
+    if kind == lsp_parser.SYM_FIELD {
         return 5
     }
     return 13
@@ -3110,7 +3295,7 @@ fn append_completion_item(
 fn append_symbol_completion(
     sb: builder.StringBuilder,
     first: ref i64,
-    sym: ref parser.Symbol,
+    sym: ref lsp_parser.Symbol,
     prefix: ref u8,
     replace_line: i64,
     replace_start: i64,
@@ -3123,7 +3308,7 @@ fn append_symbol_completion(
         return
     }
     val detail: mut ref u8 = sym.signature
-    if sym.kind == parser.SYM_FIELD || sym.kind == parser.SYM_VARIABLE {
+    if sym.kind == lsp_parser.SYM_FIELD || sym.kind == lsp_parser.SYM_VARIABLE {
         detail = sym.ret_type
     }
     append_completion_item(
@@ -3137,7 +3322,7 @@ fn append_method_completions(
     first: ref i64,
     sym_store: mut ref void,
     doc_store: mut ref void,
-    type_sym: ref parser.Symbol,
+    type_sym: ref lsp_parser.Symbol,
     prefix: ref u8,
     replace_line: i64,
     replace_start: i64,
@@ -3157,8 +3342,8 @@ fn append_method_completions(
             break
         }
         if coll.PtrList.get(syms, i) is some v {
-            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-            if sym != none && sym.kind == parser.SYM_METHOD && method_receiver_matches(
+            val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
+            if sym != none && sym.kind == lsp_parser.SYM_METHOD && method_receiver_matches(
                 sym.receiver,
                 type_sym.name
             ) {
@@ -3182,7 +3367,7 @@ fn append_field_completions(
     first: ref i64,
     doc_store: mut ref void,
     sym_store: mut ref void,
-    type_sym: ref parser.Symbol,
+    type_sym: ref lsp_parser.Symbol,
     prefix: ref u8,
     replace_line: i64,
     replace_start: i64,
@@ -3199,7 +3384,7 @@ fn append_field_completions(
             break
         }
         if coll.PtrList.get(fields, i) is some v {
-            val field: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+            val field: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
             append_symbol_completion(
                 sb,
                 first,
@@ -3212,7 +3397,7 @@ fn append_field_completions(
         }
         i++
     }
-    parser.free_sym_list(fields)
+    lsp_parser.free_sym_list(fields)
 }
 
 fn module_syms_for_alias(
@@ -3231,16 +3416,16 @@ fn module_syms_for_alias(
             cur_syms = @bitcast(v, ref void)
         }
     }
-    val imp: ref parser.Symbol = find_import_sym(cur_syms, alias)
+    val imp: ref lsp_parser.Symbol = find_import_sym(cur_syms, alias)
     if imp == none || imp.ret_type == none {
         return none
     }
-    val mod_file: ref u8 = parser.resolve_module_path(current_file, imp.ret_type)
+    val mod_file: ref u8 = lsp_parser.resolve_module_path(current_file, imp.ret_type)
     if mod_file == none {
         return none
     }
     ensure_parsed(doc_store, sym_store, mod_file)
-    val mod_uri: ref u8 = parser.path_to_uri(mod_file)
+    val mod_uri: ref u8 = lsp_parser.path_to_uri(mod_file)
     @free(mod_file)
     if mod_uri == none {
         return none
@@ -3263,7 +3448,7 @@ fn resolve_chain_type_symbol(
     cursor_off: i64,
     base: ref u8,
     depth: i64
-) ref parser.Symbol = trust {
+) ref lsp_parser.Symbol = trust {
     if base == none || depth > 8 {
         return none
     }
@@ -3302,7 +3487,7 @@ fn resolve_chain_type_symbol(
     if head_type == none {
         return none
     }
-    val head_sym: ref parser.Symbol = resolve_type_symbol(
+    val head_sym: ref lsp_parser.Symbol = resolve_type_symbol(
         doc_store, sym_store, current_uri, current_file, head_type, depth + 1
     )
     @free(head_type)
@@ -3310,7 +3495,7 @@ fn resolve_chain_type_symbol(
         return head_sym
     }
 
-    val current: mut ref parser.Symbol = head_sym
+    val current: mut ref lsp_parser.Symbol = head_sym
     val pos: mut i64 = first_dot + 1
     for {
         if pos >= len {
@@ -3331,19 +3516,19 @@ fn resolve_chain_type_symbol(
             val seg: ref u8 = raw_dup_h(@ptradd(base, seg_start), seg_end - seg_start)
             if seg != none {
                 val fields: mut ref void = fields_for_type(doc_store, sym_store, current)
-                val field: ref parser.Symbol = find_sym_by_name(fields, seg)
+                val field: ref lsp_parser.Symbol = find_sym_by_name(fields, seg)
                 val field_type: mut ref u8 = none
                 if field != none && field.ret_type != none {
                     field_type = raw_dup_cstr_h(field.ret_type)
                 }
                 if fields != none {
-                    parser.free_sym_list(fields)
+                    lsp_parser.free_sym_list(fields)
                 }
                 @free(seg)
                 if field_type == none {
                     return none
                 }
-                val field_uri: ref u8 = parser.path_to_uri(current.file)
+                val field_uri: ref u8 = lsp_parser.path_to_uri(current.file)
                 current = resolve_type_symbol(
                     doc_store, sym_store, field_uri, current.file, field_type, depth + 1
                 )
@@ -3378,8 +3563,8 @@ fn send_intrinsic_hover(id_raw: ref void, word: ref u8) void = trust {
 
 fn send_field_hover(
     id_raw: ref void,
-    field: ref parser.Symbol,
-    type_sym: ref parser.Symbol
+    field: ref lsp_parser.Symbol,
+    type_sym: ref lsp_parser.Symbol
 ) void = trust {
     if field == none {
         send_null_result(id_raw)
@@ -3446,11 +3631,11 @@ pub fn handle_hover(
 
     val ws: mut i64 = -1
     val wl: mut i64 = 0
-    parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
+    lsp_parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
     if ws < 0 || wl <= 0 {
         // Hovering directly on the '@' of an intrinsic: find the identifier
         // immediately after it.
-        parser.find_word_at(content, line, col + 1, @addr(ws), @addr(wl))
+        lsp_parser.find_word_at(content, line, col + 1, @addr(ws), @addr(wl))
         if ws <= 0 || wl <= 0 || @load8(@ptradd(content, ws - 1)) != '@' {
             send_null_result(id_raw)
             return
@@ -3473,7 +3658,7 @@ pub fn handle_hover(
 
     val ms: mut i64 = -1
     val ml: mut i64 = 0
-    parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
+    lsp_parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
 
     val module_alias: mut ref u8 = none
     if ms >= 0 && ml > 0 {
@@ -3484,7 +3669,7 @@ pub fn handle_hover(
         }
     }
 
-    val file_path: ref u8 = parser.uri_to_path(uri)
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
 
     // `value.field` / `Type.method` hover.  The part before the dot may be a
     // local variable, a parameter, a global, or a type name.
@@ -3492,7 +3677,7 @@ pub fn handle_hover(
         val base_type: ref u8 = lookup_variable_type_expr(
             doc_store, sym_store, uri, file_path, content, line, ws, module_alias, 0
         )
-        val type_sym: mut ref parser.Symbol = none
+        val type_sym: mut ref lsp_parser.Symbol = none
         if base_type != none {
             type_sym = resolve_type_symbol(doc_store, sym_store, uri, file_path, base_type, 0)
             @free(base_type)
@@ -3507,7 +3692,7 @@ pub fn handle_hover(
         }
         if type_sym != none {
             val fields: mut ref void = fields_for_type(doc_store, sym_store, type_sym)
-            val field: ref parser.Symbol = find_sym_by_name(fields, word)
+            val field: ref lsp_parser.Symbol = find_sym_by_name(fields, word)
             if field != none {
                 val sb: builder.StringBuilder = builder.StringBuilder.new()
                 make_base(sb, id_raw)
@@ -3531,7 +3716,7 @@ pub fn handle_hover(
                 ostr.free(built)
                 builder.StringBuilder.free(sb)
                 if fields != none {
-                    parser.free_sym_list(fields)
+                    lsp_parser.free_sym_list(fields)
                 }
                 if word != none {
                     @free(word)
@@ -3545,12 +3730,12 @@ pub fn handle_hover(
                 return
             }
             if fields != none {
-                parser.free_sym_list(fields)
+                lsp_parser.free_sym_list(fields)
             }
 
             val type_syms: ref void = sym_list_for_file(sym_store, doc_store, type_sym.file)
-            val method: ref parser.Symbol = find_sym_by_name(type_syms, word)
-            if method != none && method.kind == parser.SYM_METHOD &&
+            val method: ref lsp_parser.Symbol = find_sym_by_name(type_syms, word)
+            if method != none && method.kind == lsp_parser.SYM_METHOD &&
             method_receiver_matches(method.receiver, type_sym.name) {
                 val sb: builder.StringBuilder = builder.StringBuilder.new()
                 make_base(sb, id_raw)
@@ -3623,15 +3808,15 @@ pub fn handle_hover(
                     break
                 }
                 if coll.PtrList.get(cur_syms, i) is some v {
-                    val tsym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                    val tsym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
                     if tsym != none &&
-                    (tsym.kind == parser.SYM_TYPE || tsym.kind == parser.SYM_ENUM || tsym.kind == parser.SYM_UNION) {
+                    (tsym.kind == lsp_parser.SYM_TYPE || tsym.kind == lsp_parser.SYM_ENUM || tsym.kind == lsp_parser.SYM_UNION) {
                         val fields: mut ref void = fields_for_type(doc_store, sym_store, tsym)
-                        val field: ref parser.Symbol = find_sym_by_name(fields, word)
+                        val field: ref lsp_parser.Symbol = find_sym_by_name(fields, word)
                         if field != none && field.line == line {
                             send_field_hover(id_raw, field, tsym)
                             if fields != none {
-                                parser.free_sym_list(fields)
+                                lsp_parser.free_sym_list(fields)
                             }
                             if word != none {
                                 @free(word)
@@ -3645,7 +3830,7 @@ pub fn handle_hover(
                             return
                         }
                         if fields != none {
-                            parser.free_sym_list(fields)
+                            lsp_parser.free_sym_list(fields)
                         }
                     }
                 }
@@ -3758,7 +3943,7 @@ pub fn handle_hover(
         }
     }
 
-    val sym: ref parser.Symbol = lookup_symbol(
+    val sym: ref lsp_parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, word, module_alias
     )
     if sym == none && module_alias == none && is_builtin_type_word(str.from_cstr(word)) {
@@ -3808,7 +3993,7 @@ pub fn handle_hover(
         ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
     )
 
-    if sym.kind == parser.SYM_TYPE || sym.kind == parser.SYM_ENUM || sym.kind == parser.SYM_UNION {
+    if sym.kind == lsp_parser.SYM_TYPE || sym.kind == lsp_parser.SYM_ENUM || sym.kind == lsp_parser.SYM_UNION {
         append_type_hover_contents(sb, doc_store, sym_store, uri, file_path, sym)
     } else {
         if sym.signature != none {
@@ -3894,16 +4079,16 @@ pub fn handle_definition(
 
     val use_start: mut i64 = -1
     val use_len: mut i64 = 0
-    parser.find_use_path_at(content, line, col, @addr(use_start), @addr(use_len))
+    lsp_parser.find_use_path_at(content, line, col, @addr(use_start), @addr(use_len))
     if use_start >= 0 && use_len > 0 {
         val mod_path: ref u8 = raw_dup_h(@ptradd(content, use_start), use_len)
-        val current_file: ref u8 = parser.uri_to_path(uri)
+        val current_file: ref u8 = lsp_parser.uri_to_path(uri)
         val mod_file: mut ref u8 = none
         if mod_path != none && current_file != none {
-            mod_file = parser.resolve_module_path(current_file, mod_path)
+            mod_file = lsp_parser.resolve_module_path(current_file, mod_path)
         }
         if mod_file != none {
-            val def_uri: ref u8 = parser.path_to_uri(mod_file)
+            val def_uri: ref u8 = lsp_parser.path_to_uri(mod_file)
             if def_uri != none {
                 send_definition_location(id_raw, def_uri, 0, 0, 0)
                 @free(def_uri)
@@ -3927,7 +4112,7 @@ pub fn handle_definition(
 
     val ws: mut i64 = -1
     val wl: mut i64 = 0
-    parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
+    lsp_parser.find_word_at(content, line, col, @addr(ws), @addr(wl))
     if ws < 0 || wl <= 0 {
         send_null_result(id_raw)
         return
@@ -3943,7 +4128,7 @@ pub fn handle_definition(
 
     val ms: mut i64 = -1
     val ml: mut i64 = 0
-    parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
+    lsp_parser.find_dot_prefix(content, ws, @addr(ms), @addr(ml))
 
     val module_alias: mut ref u8 = none
     if ms >= 0 && ml > 0 {
@@ -3954,13 +4139,13 @@ pub fn handle_definition(
         }
     }
 
-    val file_path: ref u8 = parser.uri_to_path(uri)
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
 
     if module_alias != none {
         val base_type: ref u8 = lookup_variable_type_expr(
             doc_store, sym_store, uri, file_path, content, line, ws, module_alias, 0
         )
-        val type_sym: mut ref parser.Symbol = none
+        val type_sym: mut ref lsp_parser.Symbol = none
         if base_type != none {
             type_sym = resolve_type_symbol(doc_store, sym_store, uri, file_path, base_type, 0)
             @free(base_type)
@@ -3975,9 +4160,9 @@ pub fn handle_definition(
         }
         if type_sym != none {
             val fields: mut ref void = fields_for_type(doc_store, sym_store, type_sym)
-            val field: ref parser.Symbol = find_sym_by_name(fields, word)
+            val field: ref lsp_parser.Symbol = find_sym_by_name(fields, word)
             if field != none {
-                val def_uri: ref u8 = parser.path_to_uri(field.file)
+                val def_uri: ref u8 = lsp_parser.path_to_uri(field.file)
                 send_definition_location(
                     id_raw,
                     def_uri,
@@ -3989,7 +4174,7 @@ pub fn handle_definition(
                     @free(def_uri)
                 }
                 if fields != none {
-                    parser.free_sym_list(fields)
+                    lsp_parser.free_sym_list(fields)
                 }
                 if word != none {
                     @free(word)
@@ -4003,14 +4188,14 @@ pub fn handle_definition(
                 return
             }
             if fields != none {
-                parser.free_sym_list(fields)
+                lsp_parser.free_sym_list(fields)
             }
 
             val type_syms: ref void = sym_list_for_file(sym_store, doc_store, type_sym.file)
-            val method: ref parser.Symbol = find_sym_by_name(type_syms, word)
-            if method != none && method.kind == parser.SYM_METHOD &&
+            val method: ref lsp_parser.Symbol = find_sym_by_name(type_syms, word)
+            if method != none && method.kind == lsp_parser.SYM_METHOD &&
             method_receiver_matches(method.receiver, type_sym.name) {
-                val def_uri: ref u8 = parser.path_to_uri(method.file)
+                val def_uri: ref u8 = lsp_parser.path_to_uri(method.file)
                 send_definition_location(
                     id_raw,
                     def_uri,
@@ -4048,13 +4233,13 @@ pub fn handle_definition(
                     break
                 }
                 if coll.PtrList.get(cur_syms, i) is some v {
-                    val tsym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                    val tsym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
                     if tsym != none &&
-                    (tsym.kind == parser.SYM_TYPE || tsym.kind == parser.SYM_ENUM || tsym.kind == parser.SYM_UNION) {
+                    (tsym.kind == lsp_parser.SYM_TYPE || tsym.kind == lsp_parser.SYM_ENUM || tsym.kind == lsp_parser.SYM_UNION) {
                         val fields: mut ref void = fields_for_type(doc_store, sym_store, tsym)
-                        val field: ref parser.Symbol = find_sym_by_name(fields, word)
+                        val field: ref lsp_parser.Symbol = find_sym_by_name(fields, word)
                         if field != none && field.line == line {
-                            val def_uri: ref u8 = parser.path_to_uri(field.file)
+                            val def_uri: ref u8 = lsp_parser.path_to_uri(field.file)
                             send_definition_location(
                                 id_raw,
                                 def_uri,
@@ -4066,7 +4251,7 @@ pub fn handle_definition(
                                 @free(def_uri)
                             }
                             if fields != none {
-                                parser.free_sym_list(fields)
+                                lsp_parser.free_sym_list(fields)
                             }
                             if word != none {
                                 @free(word)
@@ -4080,7 +4265,7 @@ pub fn handle_definition(
                             return
                         }
                         if fields != none {
-                            parser.free_sym_list(fields)
+                            lsp_parser.free_sym_list(fields)
                         }
                     }
                 }
@@ -4098,10 +4283,10 @@ pub fn handle_definition(
             if coll.StringMap.get(sym_store, uri) is some v {
                 cur_syms = @bitcast(v, ref void)
             }
-            val fn_sym: ref parser.Symbol = find_enclosing_callable(cur_syms, line)
+            val fn_sym: ref lsp_parser.Symbol = find_enclosing_callable(cur_syms, line)
             if fn_sym != none {
                 val pcol: i64 = find_word_col_in_line(content, fn_sym.line, word)
-                val def_uri: ref u8 = parser.path_to_uri(fn_sym.file)
+                val def_uri: ref u8 = lsp_parser.path_to_uri(fn_sym.file)
                 send_definition_location(id_raw, def_uri, fn_sym.line, pcol, cstr.len(word))
                 if def_uri != none {
                     @free(def_uri)
@@ -4178,7 +4363,7 @@ pub fn handle_definition(
         }
     }
 
-    val sym: ref parser.Symbol = lookup_symbol(
+    val sym: ref lsp_parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, word, module_alias
     )
     if file_path != none {
@@ -4198,7 +4383,7 @@ pub fn handle_definition(
 
     val def_uri: mut ref u8 = none
     if sym.file != none {
-        def_uri = parser.path_to_uri(sym.file)
+        def_uri = lsp_parser.path_to_uri(sym.file)
     } else {
         def_uri = raw_dup_cstr_h(uri)
     }
@@ -4251,7 +4436,7 @@ pub fn handle_document_symbol(
                 break
             }
             if coll.PtrList.get(sym_list, i) is some v {
-                val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
                 if sym != none && sym.name != none {
                     if first == 0 {
                         builder.StringBuilder.append(sb, ",")
@@ -4299,7 +4484,7 @@ fn find_method_for_type(
     sym_list: ref void,
     type_name: ref u8,
     name: ref u8
-) ref parser.Symbol = trust {
+) ref lsp_parser.Symbol = trust {
     if sym_list == none || type_name == none || name == none {
         return none
     }
@@ -4310,8 +4495,8 @@ fn find_method_for_type(
             break
         }
         if coll.PtrList.get(sym_list, i) is some v {
-            val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
-            if sym != none && sym.kind == parser.SYM_METHOD && sym.name != none &&
+            val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
+            if sym != none && sym.kind == lsp_parser.SYM_METHOD && sym.name != none &&
             cstr.cmp(sym.name, name) == 0 &&
             method_receiver_matches(sym.receiver, type_name) {
                 return sym
@@ -4331,7 +4516,7 @@ fn resolve_signature_symbol(
     line: i64,
     name: ref u8,
     qualifier: ref u8
-) ref parser.Symbol = trust {
+) ref lsp_parser.Symbol = trust {
     if name == none {
         return none
     }
@@ -4340,14 +4525,14 @@ fn resolve_signature_symbol(
     }
 
     // Module aliases and plain type names.
-    val direct: ref parser.Symbol = lookup_symbol(
+    val direct: ref lsp_parser.Symbol = lookup_symbol(
         doc_store, sym_store, current_uri, current_file, name, qualifier
     )
     if direct != none {
         return direct
     }
 
-    val type_sym: mut ref parser.Symbol = resolve_type_symbol(
+    val type_sym: mut ref lsp_parser.Symbol = resolve_type_symbol(
         doc_store, sym_store, current_uri, current_file, qualifier, 0
     )
     if type_sym == none {
@@ -4521,14 +4706,14 @@ pub fn handle_signature_help(
         return
     }
 
-    val ctx_mem: ref void = @alloc(@sizeof(parser.CallContext))
+    val ctx_mem: ref void = @alloc(@sizeof(lsp_parser.CallContext))
     if ctx_mem == none {
         send_null_result(id_raw)
         return
     }
-    @memset(ctx_mem, 0, @sizeof(parser.CallContext) as usize)
-    val ctx: mut ref parser.CallContext = ctx_mem as ref parser.CallContext
-    parser.find_active_call(content, line, col, ctx)
+    @memset(ctx_mem, 0, @sizeof(lsp_parser.CallContext) as usize)
+    val ctx: mut ref lsp_parser.CallContext = ctx_mem as ref lsp_parser.CallContext
+    lsp_parser.find_active_call(content, line, col, ctx)
 
     val fn_name: mut ref u8 = ctx.fn_name
     val qualifier: mut ref u8 = ctx.qualifier
@@ -4553,8 +4738,8 @@ pub fn handle_signature_help(
         return
     }
 
-    val file_path: ref u8 = parser.uri_to_path(uri)
-    val sym: ref parser.Symbol = resolve_signature_symbol(
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
+    val sym: ref lsp_parser.Symbol = resolve_signature_symbol(
         doc_store, sym_store, uri, file_path, content, line, fn_name, qualifier
     )
     @free(fn_name)
@@ -4623,11 +4808,57 @@ pub fn handle_signature_help(
     builder.StringBuilder.free(sb)
 }
 
+fn clear_pending() void = trust {
+    if g_pending_uri != none {
+        @free(g_pending_uri)
+        g_pending_uri = none
+    }
+    g_pending_due = 0
+}
+
+fn set_pending(uri: ref u8) void = trust {
+    if uri == none {
+        clear_pending()
+        return
+    }
+    val copy: ref u8 = raw_dup_cstr_h(uri)
+    if copy == none {
+        return
+    }
+    if g_pending_uri != none {
+        @free(g_pending_uri)
+    }
+    g_pending_uri = copy
+    // 300ms after the last edit.
+    g_pending_due = time.now_ns() + 300000000
+}
+
+pub fn pending_due_ns() i64 = trust {
+    return g_pending_due
+}
+
+pub fn run_pending_check(doc_store: ref void) void = trust {
+    if g_pending_uri == none {
+        g_pending_due = 0
+        return
+    }
+    val uri: ref u8 = g_pending_uri
+    val content: mut ref u8 = none
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
+    }
+    if content != none {
+        send_diagnostics(uri, content)
+    }
+    clear_pending()
+}
+
 pub fn update_document(
     doc_store: ref void,
     sym_store: ref void,
     uri: ref u8,
-    text: ref u8
+    text: ref u8,
+    run_now: bool
 ) void = trust {
     if uri == none || text == none {
         return
@@ -4652,12 +4883,12 @@ pub fn update_document(
     if coll.StringMap.get(sym_store, uri) is some old_v {
         val old_syms: mut ref void = @bitcast(old_v, ref void)
         if old_syms != none {
-            parser.free_sym_list(old_syms)
+            lsp_parser.free_sym_list(old_syms)
         }
     }
 
-    val file_path: ref u8 = parser.uri_to_path(uri)
-    val syms: ref void = parser.parse_file(file_path, text_copy)
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
+    val syms: ref void = lsp_parser.parse_file(file_path, text_copy)
     if file_path != none {
         @free(file_path)
     }
@@ -4667,7 +4898,16 @@ pub fn update_document(
         coll.StringMap.set[_](alloc, sym_store, uri, sv)
     }
 
-    send_diagnostics(uri, text_copy)
+    if run_now {
+        clear_pending()
+        send_diagnostics(uri, text_copy)
+    } else {
+        // Don't lose a pending check when the user switches files.
+        if g_pending_uri != none && cstr.cmp(g_pending_uri, uri) != 0 {
+            run_pending_check(doc_store)
+        }
+        set_pending(uri)
+    }
 }
 
 pub fn handle_did_open(
@@ -4687,7 +4927,29 @@ pub fn handle_did_open(
     if uri == none || text == none {
         return
     }
-    update_document(doc_store, sym_store, uri, text)
+    update_document(doc_store, sym_store, uri, text, true)
+}
+
+pub fn handle_did_save(doc_store: ref void, params: ref void) void = trust {
+    if params == none {
+        return
+    }
+    val td_obj: ref void = get_obj_field(params, "textDocument")
+    if td_obj == none {
+        return
+    }
+    val uri: ref u8 = get_str_field(td_obj, "uri")
+    if uri == none {
+        return
+    }
+    val content: mut ref u8 = none
+    if coll.StringMap.get(doc_store, uri) is some v {
+        content = @bitcast(v, ref void) as ref u8
+    }
+    if content != none {
+        clear_pending()
+        send_diagnostics(uri, content)
+    }
 }
 
 pub fn handle_did_change(
@@ -4724,7 +4986,7 @@ pub fn handle_did_change(
     if json.arr_get(changes, last_idx - 1) is some ch {
         val text: ref u8 = get_str_field(ch, "text")
         if text != none {
-            update_document(doc_store, sym_store, uri, text)
+            update_document(doc_store, sym_store, uri, text, false)
         }
     }
 }
@@ -4787,6 +5049,8 @@ pub fn dispatch(
                 handle_did_open(doc_store, sym_store, params)
             } elif mlen == 22 && starts_with_h(str.view(method, mlen), "textDocument/didChange") {
                 handle_did_change(doc_store, sym_store, params)
+            } elif mlen == 20 && starts_with_h(str.view(method, mlen), "textDocument/didSave") {
+                handle_did_save(doc_store, params)
             } elif mlen == 8 && starts_with_h(str.view(method, mlen), "shutdown") {
                 send_null_result(id_raw)
             }
@@ -4877,7 +5141,7 @@ pub fn handle_completion(
         send_null_result(id_raw)
         return
     }
-    val file_path: ref u8 = parser.uri_to_path(uri)
+    val file_path: ref u8 = lsp_parser.uri_to_path(uri)
 
     val start: mut i64 = -1
     val end: mut i64 = -1
@@ -4934,7 +5198,10 @@ pub fn handle_completion(
                         break
                     }
                     if coll.PtrList.get(mod_syms, mi) is some v {
-                        val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                        val sym: ref lsp_parser.Symbol = @bitcast(
+                            v,
+                            ref void
+                        ) as ref lsp_parser.Symbol
                         append_symbol_completion(
                             sb,
                             @addr(first),
@@ -4951,7 +5218,7 @@ pub fn handle_completion(
         }
 
         if !handled {
-            val type_sym: mut ref parser.Symbol = resolve_type_symbol(
+            val type_sym: mut ref lsp_parser.Symbol = resolve_type_symbol(
                 doc_store, sym_store, uri, file_path, base, 0
             )
             if type_sym == none {
@@ -4986,7 +5253,7 @@ pub fn handle_completion(
                     break
                 }
                 if coll.PtrList.get(cur_syms, i) is some v {
-                    val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
+                    val sym: ref lsp_parser.Symbol = @bitcast(v, ref void) as ref lsp_parser.Symbol
                     append_symbol_completion(
                         sb,
                         @addr(first),

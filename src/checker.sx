@@ -1,0 +1,353 @@
+/// Full semantic checking powered by the Spectre compiler itself.
+///
+/// The compiler is vendored as a normal project dependency (`lib/spectre`).
+/// We parse the current in-memory buffer with the compiler's own lexer/parser,
+/// resolve imports from disk, and hand the resulting module tree to
+/// `sema.check_module_tree`.  This keeps the language server in sync with the
+/// compiler without spawning a subprocess or writing unsaved buffers to disk.
+///
+/// The module alias `parser` is intentionally reserved for the compiler's
+/// parser: Spectre codegen mangles module symbols by import alias, so the LSP
+/// parser is imported as `lsp_parser` everywhere.
+
+val str        = use("std/string")
+val cstr       = use("std/string/cstr")
+val ostr       = use("std/string/owned")
+val builder    = use("std/string/builder")
+val allocators = use("std/allocators")
+val fs         = use("std/fs")
+val path       = use("std/path")
+
+val mem     = use("../lib/spectre/src/meta/mem.sx")
+val lexer   = use("../lib/spectre/src/ast/lexer.sx")
+val parser  = use("../lib/spectre/src/ast/parser.sx")
+val modinfo = use("../lib/spectre/src/module/module.sx")
+val sema    = use("../lib/spectre/src/sema/sema.sx")
+
+val lsp_parser = use("./parser")
+
+fn arena_cstr(arena: allocators.ScopedArenaAllocator, src: ref u8) ref u8 = trust {
+    if src == none {
+        return none
+    }
+    val len: i64 = cstr.len(src)
+    val buf: ref u8 = allocators.ScopedArena.alloc_or_none(
+        arena,
+        (len + 1) as usize
+    ) as ref u8
+    if buf == none {
+        return none
+    }
+    if len > 0 {
+        @memcpy(buf, src, len as usize)
+    }
+    @store8(@ptradd(buf, len), 0)
+    return buf
+}
+
+fn arena_string(arena: allocators.ScopedArenaAllocator, src: ref u8) str.String = trust {
+    val len: i64 = cstr.len(src)
+    val buf: ref void = allocators.ScopedArena.alloc_or_none(
+        arena,
+        (len + 1) as usize
+    )
+    if buf == none {
+        return none
+    }
+    if len > 0 {
+        @memcpy(buf, src, len as usize)
+    }
+    @store8(@ptradd(buf, len), 0)
+
+    val out: ref void = allocators.ScopedArena.alloc_or_none(
+        arena,
+        @sizeof(str.String) as usize
+    )
+    if out == none {
+        return none
+    }
+    @store(out, buf)
+    @store(@ptradd(out, 8), len)
+    @store(@ptradd(out, 16), len + 1)
+    return out as str.String
+}
+
+fn append_diag(
+    out: builder.StringBuilder,
+    file: ref u8,
+    line: i64,
+    msg: ref u8
+) void = trust {
+    if file == none || msg == none {
+        return
+    }
+    val s: ref u8 = @fmtalloc("{s}:{lld}: {s}\n", {file, line, msg})
+    if s != none {
+        builder.StringBuilder.append_cstr(out, s)
+        @free(s)
+    }
+}
+
+/// Lexer errors look like "unexpected character at 12:5" without a filename.
+fn lex_error_line(e: ref u8) i64 = trust {
+    if e == none {
+        return 1
+    }
+    val view: str.StringView = str.from_cstr(e)
+    val pos_opt = str.find(view, " at ")
+    val pos: mut i64 = -1
+    if pos_opt is some p {
+        pos = p
+    }
+    if pos < 0 {
+        return 1
+    }
+    val start: i64 = pos + 4
+    val n: i64 = view.len
+    val v: mut i64 = 0
+    val i: mut i64 = start
+    for {
+        if i >= n {
+            break
+        }
+        val c: u8 = @load8(@ptradd(view.ptr, i))
+        if c < '0' || c > '9' {
+            break
+        }
+        v = v * 10 + (c as i64 - 48)
+        i++
+    }
+    if i == start || v <= 0 {
+        return 1
+    }
+    return v
+}
+
+fn build_module(
+    arena: allocators.ScopedArenaAllocator,
+    file: ref u8,
+    content: ref u8,
+    seen_paths: mut list[ref u8],
+    seen_mods: mut list[ref void],
+    had_error: mut list[i64],
+    out: builder.StringBuilder
+) ref modinfo.ResolvedModule = trust {
+    val canon: ref u8 = path.canonicalize_path_cstr(file)
+    if canon == none {
+        append_diag(out, file, 0, c"cannot canonicalize path")
+        @append(had_error, 1)
+        return none
+    }
+
+    val sn: i64 = @len(seen_paths) as i64
+    val si: mut i64 = 0
+    for {
+        if si >= sn {
+            break
+        }
+        val p_opt = @get(seen_paths, si as usize)
+        if p_opt is some p {
+            if cstr.cmp(p as ref u8, canon) == 0 {
+                val m_opt = @get(seen_mods, si as usize)
+                @free(canon)
+                if m_opt is some m {
+                    return m as ref modinfo.ResolvedModule
+                }
+                return none
+            }
+        }
+        si++
+    }
+
+    @append(seen_paths, arena_cstr(arena, canon))
+    @append(seen_mods, none)
+
+    val lex_res = lexer.tokenize_with_view(arena, str.from_cstr(content))
+    val toks: mut list[ref lexer.Token] = mem.new[ref lexer.Token]()
+    match lex_res {
+        err e => {
+            append_diag(out, canon, lex_error_line(e), e)
+            @free(e)
+            @append(had_error, 1)
+            @free(canon)
+            return none
+        }
+        ok t => {
+            toks = t
+        }
+    }
+
+    val parse_res = parser.parse_module_with(arena, toks, canon)
+    val items: mut list[ref parser.Node] = mem.new[ref parser.Node]()
+    match parse_res {
+        err e => {
+            builder.StringBuilder.append_cstr(out, e)
+            builder.StringBuilder.append(out, "\n")
+            @append(had_error, 1)
+            @free(canon)
+            return none
+        }
+        ok i => {
+            items = i
+        }
+    }
+
+    val dir: ref u8 = path.dir_cstr(canon)
+    val m: ref modinfo.ResolvedModule = modinfo.new_resolved(
+        arena,
+        items,
+        arena_string(arena, canon),
+        arena_string(arena, dir)
+    )
+    if dir != none {
+        @free(dir)
+    }
+    if m == none {
+        append_diag(out, canon, 0, c"cannot allocate module")
+        @append(had_error, 1)
+        @free(canon)
+        return none
+    }
+
+    val idx: i64 = (@len(seen_paths) as i64) - 1
+    @set(seen_mods, idx as usize, m as ref void)
+
+    for item in items {
+        if item.kind == parser.NK_USE {
+            val use_name: ref u8 = parser.node_str_raw(item.d1)
+            val use_path: ref u8 = parser.node_str_raw(item.d2)
+            val child_path: ref u8 = lsp_parser.resolve_module_path(canon, use_path)
+            if child_path == none {
+                val msg: ref u8 = @fmtalloc(
+                    "cannot resolve imported module '{s}'",
+                    {use_path}
+                )
+                append_diag(out, canon, item.line, msg)
+                if msg != none {
+                    @free(msg)
+                }
+                @append(had_error, 1)
+                continue
+            }
+
+            val sz_opt = fs.file_size_cstr(child_path)
+            val cap: mut i64 = 4096
+            if sz_opt is some sz {
+                if (sz as i64) > cap {
+                    cap = sz as i64
+                }
+            }
+            val src_arena = allocators.Arena.new((cap + 8) as usize)
+            match src_arena {
+                err _ => {
+                    val msg: ref u8 = @fmtalloc(
+                        "cannot read imported module '{s}'",
+                        {use_path}
+                    )
+                    append_diag(out, canon, item.line, msg)
+                    if msg != none {
+                        @free(msg)
+                    }
+                    @append(had_error, 1)
+                    @free(child_path)
+                    continue
+                }
+                ok sa => {
+                    val src_opt = fs.read_all_cstr[allocators.Arena](sa, child_path)
+                    if src_opt is some child_src {
+                        val errors_before: i64 = @len(had_error) as i64
+                        val child = build_module(
+                            arena,
+                            child_path,
+                            child_src,
+                            seen_paths,
+                            seen_mods,
+                            had_error,
+                            out
+                        )
+                        if child != none {
+                            @append(m.import_names, use_name)
+                            @append(m.import_modules, child as ref void)
+                        } elif (@len(had_error) as i64) > errors_before {
+                            // Surface a parse failure in an imported file on the
+                            // `use` line of the file the user is editing.
+                            val msg: ref u8 = @fmtalloc(
+                                "imported module '{s}' has errors",
+                                {use_path}
+                            )
+                            append_diag(out, canon, item.line, msg)
+                            if msg != none {
+                                @free(msg)
+                            }
+                        }
+                    } else {
+                        val msg: ref u8 = @fmtalloc(
+                            "cannot read imported module '{s}'",
+                            {use_path}
+                        )
+                        append_diag(out, canon, item.line, msg)
+                        if msg != none {
+                            @free(msg)
+                        }
+                        @append(had_error, 1)
+                    }
+                    allocators.Arena.free(sa)
+                }
+            }
+            @free(child_path)
+        }
+    }
+
+    @free(canon)
+    return m
+}
+
+/// Type-check `file`, using `content` as its in-memory source text.
+///
+/// Returns newline-separated `file:line: message` diagnostics.  The caller
+/// owns the returned string and must release it with `ostr.free`.
+pub fn typecheck(file: ref u8, content: ref u8) str.String = trust {
+    if file == none || content == none {
+        return ostr.new()
+    }
+
+    mem.init()
+    val arena: allocators.ScopedArenaAllocator = allocators.ScopedArena.new(
+        33554432 as usize
+    )?
+    val out: builder.StringBuilder = builder.StringBuilder.new()
+    val seen_paths: mut list[ref u8] = mem.new[ref u8]()
+    val seen_mods: mut list[ref void] = mem.new[ref void]()
+    val had_error: mut list[i64] = mem.new[i64]()
+
+    val root = build_module(
+        arena,
+        file,
+        content,
+        seen_paths,
+        seen_mods,
+        had_error,
+        out
+    )
+
+    // If parsing failed, semantic analysis would only produce cascading
+    // "unknown module/type" errors.  Report the syntax problem alone.
+    if @len(had_error) == 0 && root != none {
+        val errors: list[ref u8] = sema.check_module_tree(
+            arena,
+            root,
+            1,
+            c""
+        )
+        for e in errors {
+            builder.StringBuilder.append_cstr(out, e)
+            builder.StringBuilder.append(out, "\n")
+        }
+    }
+
+    val built: str.String = builder.StringBuilder.build(out)
+    builder.StringBuilder.free(out)
+    allocators.ScopedArena.free(arena)
+    mem.close()
+    return built
+}
