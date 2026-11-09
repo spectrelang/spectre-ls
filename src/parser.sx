@@ -1,4 +1,6 @@
 val str        = use("std/string")
+val ostr       = use("std/string/owned")
+val cstr       = use("std/string/cstr")
 val coll       = use("std/collections")
 val allocators = use("std/allocators")
 
@@ -141,19 +143,15 @@ fn raw_dup_cstr(s: ref u8) ref u8 = trust {
     if s == none {
         return none
     }
-    val len: i64 = str.len_raw(s)
+    val len: i64 = cstr.len(s)
     if len == 0 {
         return none
     }
     return raw_dup(s, len)
 }
 
-fn starts_with_n(s: ref u8, s_len: i64, prefix: str.StringView, p_len: i64) bool = trust {
-    if p_len > s_len || p_len <= 0 {
-        return false
-    }
-    val r: i32 = strncmp(s, prefix.ptr, p_len as usize)
-    return r == 0
+fn starts_with_n(s: str.StringView, prefix: str.StringView) bool = trust {
+    return str.starts_with(s, prefix)
 }
 
 fn skip_ws(s: ref u8, i: i64, len: i64) i64 = trust {
@@ -492,7 +490,7 @@ fn parse_import_decl(
     i = i + name_len
     i = skip_ws(line, i, line_len)
 
-    if !starts_with_n(@ptradd(line, i), line_len - i, "= use(\"", 7) {
+    if !starts_with_n(str.view(@ptradd(line, i), line_len - i), "= use(\"") {
         @free(alias)
         return none
     }
@@ -608,13 +606,13 @@ fn process_line(
         // skipped.
         val decl: mut ref u8 = trimmed
         val dlen: mut i64 = tlen
-        if starts_with_n(decl, dlen, "pub ", 4) {
+        if starts_with_n(str.view(decl, dlen), "pub ") {
             val poff: i64 = skip_ws(decl, 4, dlen)
             decl = @ptradd(decl, poff)
             dlen = dlen - poff
         }
-        if !starts_with_n(decl, dlen, "extern ", 7) {
-            str.clear(doc_buf)
+        if !starts_with_n(str.view(decl, dlen), "extern ") {
+            ostr.clear(doc_buf)
             @store(has_doc, 0 as i64)
             return
         }
@@ -630,8 +628,8 @@ fn process_line(
         }
         val part: ref u8 = raw_dup(@ptradd(trimmed, cs), tlen - cs)
         if part != none {
-            str.push_cstr(doc_buf, part)
-            str.push_char(doc_buf, '\n')
+            ostr.push_cstr(doc_buf, part)
+            ostr.push_char(doc_buf, '\n')
             @free(part)
         }
         @store(has_doc, 1 as i64)
@@ -642,13 +640,13 @@ fn process_line(
         return
     }
 
-    val doc_cstr: ref u8 = str.cstr(doc_buf)
+    val doc_cstr: ref u8 = ostr.as_cstr(doc_buf)
     val sym: mut ref Symbol = none
     val rest: mut ref u8 = trimmed
     val rlen: mut i64 = tlen
     val col_offset: mut i64 = i
 
-    if starts_with_n(trimmed, tlen, "pub ", 4) {
+    if starts_with_n(str.view(trimmed, tlen), "pub ") {
         val off: i64 = skip_ws(trimmed, 4, tlen)
         rest = @ptradd(trimmed, off)
         rlen = tlen - off
@@ -657,13 +655,13 @@ fn process_line(
 
     // `extern [ABI] fn ...` and `extern type ...`.  The ABI part is optional
     // for types, so skip it before dispatching on the declaration keyword.
-    if starts_with_n(rest, rlen, "extern ", 7) {
+    if starts_with_n(str.view(rest, rlen), "extern ") {
         val eoff: i64 = skip_ws(rest, 7, rlen)
         rest = @ptradd(rest, eoff)
         rlen = rlen - eoff
         col_offset = col_offset + eoff
 
-        if starts_with_n(rest, rlen, "(", 1) {
+        if starts_with_n(str.view(rest, rlen), "(") {
             val depth: mut i64 = 0
             val j: mut i64 = 0
             for {
@@ -689,15 +687,15 @@ fn process_line(
         }
     }
 
-    if starts_with_n(rest, rlen, "fn ", 3) {
+    if starts_with_n(str.view(rest, rlen), "fn ") {
         sym = parse_fn_decl(rest, rlen, line_num, file, doc_cstr, line, line_len)
-    } elif starts_with_n(rest, rlen, "type ", 5) {
+    } elif starts_with_n(str.view(rest, rlen), "type ") {
         sym = parse_kw_decl(rest, rlen, 5, SYM_TYPE, line_num, file, doc_cstr, line, line_len)
-    } elif starts_with_n(rest, rlen, "enum ", 5) {
+    } elif starts_with_n(str.view(rest, rlen), "enum ") {
         sym = parse_kw_decl(rest, rlen, 5, SYM_ENUM, line_num, file, doc_cstr, line, line_len)
-    } elif starts_with_n(rest, rlen, "union ", 6) {
+    } elif starts_with_n(str.view(rest, rlen), "union ") {
         sym = parse_kw_decl(rest, rlen, 6, SYM_UNION, line_num, file, doc_cstr, line, line_len)
-    } elif starts_with_n(rest, rlen, "val ", 4) {
+    } elif starts_with_n(str.view(rest, rlen), "val ") {
         sym = parse_import_decl(rest, rlen, line_num, file)
         if sym == none {
             sym = parse_val_decl(rest, rlen, line_num, file, doc_cstr, line, line_len)
@@ -714,10 +712,10 @@ fn process_line(
                 sym_free(sym, alloc)
             }
         }
-        str.clear(doc_buf)
+        ostr.clear(doc_buf)
         @store(has_doc, 0 as i64)
     } else {
-        str.clear(doc_buf)
+        ostr.clear(doc_buf)
         @store(has_doc, 0 as i64)
     }
 }
@@ -739,10 +737,10 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
         return syms
     }
 
-    val content_len: i64 = str.len_raw(content)
+    val content_len: i64 = cstr.len(content)
     val pos: mut i64 = 0
     val line_num: mut i64 = 0
-    val doc_buf: str.String = str.new()
+    val doc_buf: str.String = ostr.new()
     val has_doc: mut i64 = 0
     val nesting_depth: mut i64 = 0
 
@@ -801,7 +799,7 @@ pub fn parse_file(file_path: ref u8, content: ref u8) ref void = trust {
     }
 
 
-    str.string_free(doc_buf)
+    ostr.free(doc_buf)
     return syms
 }
 
@@ -815,7 +813,7 @@ pub fn find_word_at(
     @store(out_start, -1 as i64)
     @store(out_len, 0 as i64)
 
-    val content_len: i64 = str.len_raw(content)
+    val content_len: i64 = cstr.len(content)
     if content_len == 0 {
         return
     }
@@ -944,7 +942,7 @@ pub fn find_use_path_at(
 
         val is_use: bool = c == 'u' &&
         ident_len_at(line_ptr, i, line_len) == 3 &&
-        starts_with_n(@ptradd(line_ptr, i), line_len - i, "use", 3) &&
+        starts_with_n(str.view(@ptradd(line_ptr, i), line_len - i), "use") &&
         (i == 0 || !is_ident_cont(@load8(@ptradd(line_ptr, i - 1))))
 
         if is_use {
@@ -1068,7 +1066,7 @@ pub fn line_bounds_raw(
         return
     }
 
-    val len: i64 = str.len_raw(content)
+    val len: i64 = cstr.len(content)
     if len <= 0 {
         return
     }
@@ -1183,7 +1181,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
         return fields
     }
 
-    val len: i64 = str.len_raw(content)
+    val len: i64 = cstr.len(content)
     if len <= 0 {
         return fields
     }
@@ -1216,7 +1214,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
         return fields
     }
 
-    val doc_buf: str.String = str.new()
+    val doc_buf: str.String = ostr.new()
     val abs_line_start: mut i64 = line_start_at(content, open_idx)
     val cur_line: mut i64 = type_line + newline_count_between(content, ls, open_idx)
     val pos: mut i64 = open_idx + 1
@@ -1261,14 +1259,14 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
             if tlen > cs {
                 val part: ref u8 = raw_dup(@ptradd(trimmed, cs), tlen - cs)
                 if part != none {
-                    str.push_cstr(doc_buf, part)
-                    str.push_char(doc_buf, '\n')
+                    ostr.push_cstr(doc_buf, part)
+                    ostr.push_char(doc_buf, '\n')
                     @free(part)
                 }
             }
         } elif !is_comment && tlen > 0 && depth == 1 {
             val first: u8 = @load8(@ptradd(trimmed, 0))
-            if first != '}' && !starts_with_n(trimmed, tlen, "invariant", 9) {
+            if first != '}' && !starts_with_n(str.view(trimmed, tlen), "invariant") {
                 val name_len: i64 = ident_len_at(trimmed, 0, tlen)
                 if name_len > 0 {
                     val after_name: i64 = skip_ws(trimmed, name_len, tlen)
@@ -1279,7 +1277,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                             tlen - type_start
                         )
                         if type_len > 0 {
-                            val field_doc: ref u8 = str.cstr(doc_buf)
+                            val field_doc: ref u8 = ostr.as_cstr(doc_buf)
                             val field: mut ref Symbol = make_field_sym(
                                 trimmed, name_len,
                                 @ptradd(trimmed, type_start), type_len,
@@ -1298,17 +1296,17 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                                     }
                                 }
                             }
-                            str.clear(doc_buf)
+                            ostr.clear(doc_buf)
                         }
                     }
                 }
             }
         } elif tlen > 0 && !is_doc {
-            str.clear(doc_buf)
+            ostr.clear(doc_buf)
         }
 
-        if depth == 1 && tlen > 0 && starts_with_n(trimmed, tlen, "invariant", 9) {
-            str.clear(doc_buf)
+        if depth == 1 && tlen > 0 && starts_with_n(str.view(trimmed, tlen), "invariant") {
+            ostr.clear(doc_buf)
         }
 
         val i: mut i64 = pos
@@ -1342,7 +1340,7 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
         cur_line++
     }
 
-    str.string_free(doc_buf)
+    ostr.free(doc_buf)
     return fields
 }
 
@@ -1361,7 +1359,7 @@ pub fn find_active_call(
         return
     }
 
-    val content_len: i64 = str.len_raw(content)
+    val content_len: i64 = cstr.len(content)
     if content_len == 0 {
         return
     }
@@ -1544,8 +1542,8 @@ pub fn uri_to_path(uri: ref u8) ref u8 = trust {
     if uri == none {
         return none
     }
-    val len: i64 = str.len_raw(uri)
-    if starts_with_n(uri, len, "file://", 7) {
+    val len: i64 = cstr.len(uri)
+    if starts_with_n(str.view(uri, len), "file://") {
         return raw_dup_cstr(@ptradd(uri, 7))
     }
     return raw_dup_cstr(uri)
@@ -1555,7 +1553,7 @@ pub fn path_to_uri(path: ref u8) ref u8 = trust {
     if path == none {
         return none
     }
-    val plen: i64 = str.len_raw(path)
+    val plen: i64 = cstr.len(path)
     val prefix: ref u8 = c"file://"
     val pfx_len: i64 = 7
     val total: i64 = pfx_len + plen + 1
@@ -1585,7 +1583,7 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
     if path == none {
         return none
     }
-    val len: i64 = str.len_raw(path)
+    val len: i64 = cstr.len(path)
     if len == 0 {
         return raw_dup_cstr(c".")
     }
@@ -1624,8 +1622,8 @@ pub fn path_dirname(path: ref u8) ref u8 = trust {
 }
 
 pub fn path_join(dir: ref u8, name: ref u8) ref u8 = trust {
-    val dl: i64 = str.len_raw(dir)
-    val nl: i64 = str.len_raw(name)
+    val dl: i64 = cstr.len(dir)
+    val nl: i64 = cstr.len(name)
     val buf: ref u8 = @alloc(dl + 1 + nl + 1) as ref u8
     if buf == none {
         return none
@@ -1718,8 +1716,8 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
                     break
                 }
                 val ename: ref u8 = @addr(entry.d_name) as ref u8
-                val elen: i64 = str.len_raw(ename)
-                if elen >= 5 && starts_with_n(ename, elen, "std__", 5) {
+                val elen: i64 = cstr.len(ename)
+                if elen >= 5 && starts_with_n(str.view(ename, elen), "std__") {
                     found = path_join(dir, ename)
                     break
                 }
@@ -1736,7 +1734,7 @@ fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
             @free(dir)
             break
         }
-        val same: bool = (str.raw_cmp(parent, dir) == 0)
+        val same: bool = (cstr.cmp(parent, dir) == 0)
         @free(dir)
         if same {
             @free(parent)
@@ -1809,7 +1807,7 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
 }
 
 fn with_sx_suffix(s: ref u8) ref u8 = trust {
-    val len: i64 = str.len_raw(s)
+    val len: i64 = cstr.len(s)
     val buf: ref u8 = @alloc(len + 4) as ref u8
     if buf == none {
         return none
@@ -1838,7 +1836,7 @@ fn clean_path(p: ref u8) ref u8 = trust {
     }
     val src: mut ref u8 = p
     when windows {
-        val len: i64 = str.len_raw(src)
+        val len: i64 = cstr.len(src)
         val buf: ref u8 = raw_dup(src, len)
         if buf != none {
             val i: mut i64 = 0
@@ -1855,7 +1853,7 @@ fn clean_path(p: ref u8) ref u8 = trust {
             src = buf
         }
     }
-    val out: ref u8 = pathlib.canonicalize_path(str.view_cstr(src))
+    val out: ref u8 = pathlib.canonicalize_path(str.from_cstr(src))
     if out == none || out == src {
         return src
     }
@@ -1932,8 +1930,8 @@ fn find_workspace_root(start_dir: ref u8) ref u8 = trust {
         if parent == none {
             break
         }
-        val same: bool = str.raw_cmp(parent, cur) == 0
-        val is_dot: bool = str.raw_cmp(parent, c".") == 0
+        val same: bool = cstr.cmp(parent, cur) == 0
+        val is_dot: bool = cstr.cmp(parent, c".") == 0
         if same || is_dot {
             @free(parent)
             break
@@ -1949,12 +1947,12 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     if current_file == none || mod_path == none {
         return none
     }
-    val mlen: i64 = str.len_raw(mod_path)
+    val mlen: i64 = cstr.len(mod_path)
     if mlen <= 0 {
         return none
     }
 
-    if starts_with_n(mod_path, mlen, "std/", 4) {
+    if starts_with_n(str.view(mod_path, mlen), "std/") {
         val std_dir: ref u8 = find_std_dir(current_file)
         if std_dir == none {
             return none
@@ -1976,7 +1974,7 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
     }
     val workspace: ref u8 = find_workspace_root(file_dir)
 
-    if mlen > 3 && starts_with_n(@ptradd(mod_path, mlen - 3), 3, ".sx", 3) {
+    if mlen > 3 && starts_with_n(str.view(@ptradd(mod_path, mlen - 3), 3), ".sx") {
         val direct: ref u8 = existing_path(path_join(file_dir, mod_path))
         if direct != none {
             @free(file_dir)
@@ -1985,7 +1983,7 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
             }
             return direct
         }
-        if workspace != none && str.raw_cmp(workspace, file_dir) != 0 {
+        if workspace != none && cstr.cmp(workspace, file_dir) != 0 {
             val ws_direct: ref u8 = existing_path(path_join(workspace, mod_path))
             if ws_direct != none {
                 @free(file_dir)
@@ -2015,7 +2013,7 @@ pub fn resolve_module_path(current_file: ref u8, mod_path: ref u8) ref u8 = trus
         }
     }
 
-    if workspace != none && str.raw_cmp(workspace, file_dir) != 0 {
+    if workspace != none && cstr.cmp(workspace, file_dir) != 0 {
         val found: ref u8 = try_module_in_dir(workspace, mod_path, has_sep)
         if found != none {
             if exe_dir != none {
@@ -2056,12 +2054,12 @@ test {
     val d4 = trust path_dirname(c"c.sx")
     val d5 = trust path_dirname(c".")
     val j1 = trust path_join(c"/a", c"b.sx")
-    assert str.raw_cmp(d1, c"/a/b") == 0
-    assert str.raw_cmp(d2, c"/a") == 0
-    assert str.raw_cmp(d3, c"/") == 0
-    assert str.raw_cmp(d4, c".") == 0
-    assert str.raw_cmp(d5, c".") == 0
-    assert str.raw_cmp(j1, c"/a/b.sx") == 0
+    assert cstr.cmp(d1, c"/a/b") == 0
+    assert cstr.cmp(d2, c"/a") == 0
+    assert cstr.cmp(d3, c"/") == 0
+    assert cstr.cmp(d4, c".") == 0
+    assert cstr.cmp(d5, c".") == 0
+    assert cstr.cmp(j1, c"/a/b.sx") == 0
 }
 
 test "use path detection" {
@@ -2144,7 +2142,7 @@ fn scan_tokens(content: ref u8) ref void = trust {
         return tokens
     }
 
-    val len: i64 = str.len_raw(content)
+    val len: i64 = cstr.len(content)
     val max_depth: i64 = 4096
     val owner_stack: ref void = @alloc((max_depth as usize) * 8)
     if owner_stack == none {
@@ -2675,7 +2673,7 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
         if coll.PtrList.get(candidates, di) is some dv {
             val d: ref VarCandidate = @bitcast(dv, ref void) as ref VarCandidate
             if d != none && d.name != none {
-                val name_len: i64 = str.len_raw(d.name)
+                val name_len: i64 = cstr.len(d.name)
                 val ui: mut usize = 0
                 for {
                     if ui >= n {
@@ -2738,10 +2736,10 @@ pub fn find_unused_variables(content: ref u8) ref void = trust {
             val is_used: bool = flags != none && @load8(@ptradd(flags as ref u8, oi as i64)) != 0
             if d != none && d.name != none && !is_used {
                 val is_public_global: bool = d.owner == 0 && d.is_public == 1
-                if !is_public_global && str.raw_cmp(d.name, c"_") != 0 {
+                if !is_public_global && cstr.cmp(d.name, c"_") != 0 {
                     val u: mut ref UnusedVariable = unused_variable_alloc()
                     if u != none {
-                        u.name = raw_dup(@ptradd(d.name, 0), str.len_raw(d.name))
+                        u.name = raw_dup(@ptradd(d.name, 0), cstr.len(d.name))
                         u.line = d.line
                         u.col = d.col
                         val uv: usize = @bitcast(u, usize)
@@ -2784,10 +2782,10 @@ test {
         }
         if coll.PtrList.get(vars, i) is some v {
             val u: ref UnusedVariable = trust @bitcast(v, ref void) as ref UnusedVariable
-            if str.raw_cmp(u.name, c"unused_top") == 0 {
+            if cstr.cmp(u.name, c"unused_top") == 0 {
                 saw_top = u.line == 1
             }
-            if str.raw_cmp(u.name, c"unused_local") == 0 {
+            if cstr.cmp(u.name, c"unused_local") == 0 {
                 saw_local = u.line == 5
             }
         }
@@ -2814,9 +2812,9 @@ test {
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 2, 26, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, c"run") == 0
+    assert cstr.cmp(ctx.fn_name, c"run") == 0
     assert ctx.qualifier != none
-    assert str.raw_cmp(ctx.qualifier, c"obj") == 0
+    assert cstr.cmp(ctx.qualifier, c"obj") == 0
     assert ctx.param_idx == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2835,9 +2833,9 @@ test {
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 0, 18, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, c"build") == 0
+    assert cstr.cmp(ctx.fn_name, c"build") == 0
     assert ctx.qualifier != none
-    assert str.raw_cmp(ctx.qualifier, c"mod.Type") == 0
+    assert cstr.cmp(ctx.qualifier, c"mod.Type") == 0
     assert ctx.param_idx == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2856,7 +2854,7 @@ test {
     val ctx: mut ref CallContext = ctx_mem as ref CallContext
     trust find_active_call(src, 0, 23, ctx)
     assert ctx.fn_name != none
-    assert str.raw_cmp(ctx.fn_name, c"alloc") == 0
+    assert cstr.cmp(ctx.fn_name, c"alloc") == 0
     assert ctx.is_intrinsic == 1
     if ctx.fn_name != none {
         trust @free(ctx.fn_name as ref void)
@@ -2883,13 +2881,13 @@ test {
         }
         if coll.PtrList.get(syms, i) is some v {
             val sym: ref Symbol = trust @bitcast(v, ref void) as ref Symbol
-            if str.raw_cmp(sym.name, c"strlen") == 0 {
+            if cstr.cmp(sym.name, c"strlen") == 0 {
                 saw_strlen = sym.kind == SYM_FUNCTION && sym.col == 14
             }
-            if str.raw_cmp(sym.name, c"Rect") == 0 {
+            if cstr.cmp(sym.name, c"Rect") == 0 {
                 saw_rect = sym.kind == SYM_TYPE && sym.col == 12
             }
-            if str.raw_cmp(sym.name, c"uname") == 0 {
+            if cstr.cmp(sym.name, c"uname") == 0 {
                 saw_uname = sym.kind == SYM_FUNCTION && sym.col == 18
             }
         }

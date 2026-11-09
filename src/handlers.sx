@@ -1,4 +1,7 @@
 val str        = use("std/string")
+val ostr       = use("std/string/owned")
+val cstr       = use("std/string/cstr")
+val builder    = use("std/string/builder")
 val allocators = use("std/allocators")
 val coll       = use("std/collections")
 val json       = use("std/json")
@@ -7,6 +10,13 @@ val parser     = use("./parser")
 
 extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 extern (C) fn write(fd: i32, buf: ref void, count: usize) i64 = "write"
+
+fn owned_view(s: str.String) str.StringView = trust {
+    if s == none {
+        return str.view(none, 0)
+    }
+    return str.view(ostr.as_cstr(s), ostr.len(s))
+}
 
 fn raw_dup_h(s: ref u8, len: i64) ref u8 = trust {
     if s == none || len <= 0 {
@@ -25,18 +35,15 @@ fn raw_dup_cstr_h(s: ref u8) ref u8 = trust {
     if s == none {
         return none
     }
-    val len: i64 = str.len_raw(s)
+    val len: i64 = cstr.len(s)
     if len == 0 {
         return none
     }
     return raw_dup_h(s, len)
 }
 
-fn starts_with_h(s: ref u8, slen: i64, prefix: str.StringView, plen: i64) bool = trust {
-    if plen > slen || plen <= 0 {
-        return false
-    }
-    return strncmp(s, prefix.ptr, plen as usize) == 0
+fn starts_with_h(s: str.StringView, prefix: str.StringView) bool = trust {
+    return str.starts_with(s, prefix)
 }
 
 fn read_file_to_heap(path: ref u8) ref u8 = trust {
@@ -50,7 +57,7 @@ fn read_file_to_heap(path: ref u8) ref u8 = trust {
         }
         ok arena => {
             val content: mut ref u8 = none
-            if fs.read_all[allocators.Arena](arena, str.view_cstr(path)) is some c {
+            if fs.read_all[allocators.Arena](arena, str.from_cstr(path)) is some c {
                 content = raw_dup_cstr_h(c)
             }
             allocators.Arena.free(arena)
@@ -79,19 +86,16 @@ fn write_all(fd: i32, buf: ref void, count: usize) bool = trust {
     return true
 }
 
-pub fn write_response(body: ref u8) void = trust {
-    if body == none {
+pub fn write_response(body: str.StringView) void = trust {
+    if str.is_empty(body) {
         return
     }
-    val body_len: i64 = str.len_raw(body)
-    if body_len < 0 {
-        return
-    }
+    val body_len: i64 = body.len
     val header: ref u8 = @fmtalloc("Content-Length: {d}", {body_len})
     if header == none {
         return
     }
-    val hlen: i64 = str.len_raw(header)
+    val hlen: i64 = cstr.len(header)
     val sep: ref u8 = @alloc(5) as ref u8
     if sep == none {
         @free(header)
@@ -105,7 +109,7 @@ pub fn write_response(body: ref u8) void = trust {
     if hlen >= 0 {
         if write_all(1 as i32, header, hlen as usize) {
             if write_all(1 as i32, sep, 4 as usize) {
-                write_all(1 as i32, body, body_len as usize)
+                write_all(1 as i32, body.ptr as ref void, body_len as usize)
             }
         }
     }
@@ -113,47 +117,53 @@ pub fn write_response(body: ref u8) void = trust {
     @free(header)
 }
 
-fn sb_append_int(sb: str.StringBuilder, n: i64) void = trust {
+fn sb_append_int(sb: builder.StringBuilder, n: i64) void = trust {
     val s: ref u8 = @fmtalloc("{d}", {n})
     if s == none {
         return
     }
-    str.StringBuilder.append_cstr(sb, s)
+    builder.StringBuilder.append_cstr(sb, s)
     @free(s)
 }
 
-fn sb_escape(sb: str.StringBuilder, s: ref u8) void = trust {
-    if s == none {
+fn sb_escape(sb: builder.StringBuilder, s: str.StringView) void = trust {
+    if str.is_empty(s) {
         return
     }
-    val len: i64 = str.len_raw(s)
     val i: mut i64 = 0
     for {
-        if i >= len {
+        if i >= s.len {
             break
         }
-        val c: u8 = @load8(@ptradd(s, i))
+        val c: u8 = @load8(@ptradd(s.ptr, i))
         if c == '"' {
-            str.StringBuilder.append_cstr(sb, c"\\\"")
+            builder.StringBuilder.append(sb, "\\\"")
         } elif c == '\\' {
-            str.StringBuilder.append_cstr(sb, c"\\\\")
+            builder.StringBuilder.append(sb, "\\\\")
         } elif c == '\n' {
-            str.StringBuilder.append_cstr(sb, c"\\n")
+            builder.StringBuilder.append(sb, "\\n")
         } elif c == '\r' {
-            str.StringBuilder.append_cstr(sb, c"\\r")
+            builder.StringBuilder.append(sb, "\\r")
         } elif c == '\t' {
-            str.StringBuilder.append_cstr(sb, c"\\t")
+            builder.StringBuilder.append(sb, "\\t")
         } else {
-            str.StringBuilder.append_char(sb, c)
+            builder.StringBuilder.append_char(sb, c)
         }
         i++
     }
 }
 
-fn make_base(sb: str.StringBuilder, id_raw: ref void) void = trust {
-    str.StringBuilder.append_cstr(sb, c"{\"jsonrpc\":\"2.0\",\"id\":")
+fn sb_escape_cstr(sb: builder.StringBuilder, s: ref u8) void = trust {
+    if s == none {
+        return
+    }
+    sb_escape(sb, str.from_cstr(s))
+}
+
+fn make_base(sb: builder.StringBuilder, id_raw: ref void) void = trust {
+    builder.StringBuilder.append(sb, "{\"jsonrpc\":\"2.0\",\"id\":")
     if id_raw == none {
-        str.StringBuilder.append_cstr(sb, c"null")
+        builder.StringBuilder.append(sb, "null")
         return
     }
     val ik: json.JsonKind = json.val_kind(id_raw)
@@ -162,34 +172,34 @@ fn make_base(sb: str.StringBuilder, id_raw: ref void) void = trust {
         sb_append_int(sb, n)
     } else {
         val s: ref u8 = json.val_get_str(id_raw)
-        str.StringBuilder.append_cstr(sb, c"\"")
-        sb_escape(sb, s)
-        str.StringBuilder.append_cstr(sb, c"\"")
+        builder.StringBuilder.append(sb, "\"")
+        sb_escape_cstr(sb, s)
+        builder.StringBuilder.append(sb, "\"")
     }
 }
 
 pub fn send_null_result(id_raw: ref void) void = trust {
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":null}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, ",\"result\":null}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn send_error(id_raw: ref void, code: i64, msg: ref u8) void = trust {
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"error\":{\"code\":")
+    builder.StringBuilder.append(sb, ",\"error\":{\"code\":")
     sb_append_int(sb, code)
-    str.StringBuilder.append_cstr(sb, c",\"message\":\"")
-    sb_escape(sb, msg)
-    str.StringBuilder.append_cstr(sb, c"\"}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, ",\"message\":\"")
+    sb_escape_cstr(sb, msg)
+    builder.StringBuilder.append(sb, "\"}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
@@ -197,13 +207,13 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
         return
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
-    str.StringBuilder.append_cstr(
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
+    builder.StringBuilder.append(
         sb,
-        c"{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\""
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\""
     )
-    sb_escape(sb, uri)
-    str.StringBuilder.append_cstr(sb, c"\",\"diagnostics\":[")
+    sb_escape_cstr(sb, uri)
+    builder.StringBuilder.append(sb, "\",\"diagnostics\":[")
 
     val vars: ref void = parser.find_unused_variables(content)
     if vars != none {
@@ -223,17 +233,17 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
                     if first == 1 {
                         first = 0
                     } else {
-                        str.StringBuilder.append_cstr(sb, c",")
+                        builder.StringBuilder.append(sb, ",")
                     }
-                    val nlen: i64 = str.len_raw(u.name)
-                    str.StringBuilder.append_cstr(sb, c"{\"range\":")
+                    val nlen: i64 = cstr.len(u.name)
+                    builder.StringBuilder.append(sb, "{\"range\":")
                     append_range(sb, u.line, u.col, u.col + nlen)
-                    str.StringBuilder.append_cstr(
+                    builder.StringBuilder.append(
                         sb,
-                        c",\"severity\":2,\"source\":\"spectre-ls\",\"code\":\"unused-variable\",\"message\":\"variable '"
+                        ",\"severity\":2,\"source\":\"spectre-ls\",\"code\":\"unused-variable\",\"message\":\"variable '"
                     )
-                    sb_escape(sb, u.name)
-                    str.StringBuilder.append_cstr(sb, c"' declared but never used\"}")
+                    sb_escape_cstr(sb, u.name)
+                    builder.StringBuilder.append(sb, "' declared but never used\"}")
                 }
             }
             i++
@@ -241,39 +251,39 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
         parser.free_unused_variables(vars)
     }
 
-    str.StringBuilder.append_cstr(sb, c"]}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "]}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn handle_initialize(id_raw: ref void) void = trust {
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":{\"capabilities\":{")
-    str.StringBuilder.append_cstr(sb, c"\"textDocumentSync\":1,")
-    str.StringBuilder.append_cstr(sb, c"\"hoverProvider\":true,")
-    str.StringBuilder.append_cstr(sb, c"\"definitionProvider\":true,")
-    str.StringBuilder.append_cstr(sb, c"\"documentSymbolProvider\":true,")
-    str.StringBuilder.append_cstr(sb, c"\"signatureHelpProvider\":{")
-    str.StringBuilder.append_cstr(sb, c"\"triggerCharacters\":[\"(\",\",\"]")
-    str.StringBuilder.append_cstr(sb, c"},")
+    builder.StringBuilder.append(sb, ",\"result\":{\"capabilities\":{")
+    builder.StringBuilder.append(sb, "\"textDocumentSync\":1,")
+    builder.StringBuilder.append(sb, "\"hoverProvider\":true,")
+    builder.StringBuilder.append(sb, "\"definitionProvider\":true,")
+    builder.StringBuilder.append(sb, "\"documentSymbolProvider\":true,")
+    builder.StringBuilder.append(sb, "\"signatureHelpProvider\":{")
+    builder.StringBuilder.append(sb, "\"triggerCharacters\":[\"(\",\",\"]")
+    builder.StringBuilder.append(sb, "},")
 
-    str.StringBuilder.append_cstr(sb, c"\"completionProvider\":{")
-    str.StringBuilder.append_cstr(sb, c"\"resolveProvider\":false,")
-    str.StringBuilder.append_cstr(sb, c"\"triggerCharacters\":[\".\",\":\",\">\"]")
-    str.StringBuilder.append_cstr(sb, c"}},")
+    builder.StringBuilder.append(sb, "\"completionProvider\":{")
+    builder.StringBuilder.append(sb, "\"resolveProvider\":false,")
+    builder.StringBuilder.append(sb, "\"triggerCharacters\":[\".\",\":\",\">\"]")
+    builder.StringBuilder.append(sb, "}},")
 
-    str.StringBuilder.append_cstr(
+    builder.StringBuilder.append(
         sb,
-        c"\"serverInfo\":{\"name\":\"spectre-ls\",\"version\":\"0.1.0\"}"
+        "\"serverInfo\":{\"name\":\"spectre-ls\",\"version\":\"0.1.0\"}"
     )
-    str.StringBuilder.append_cstr(sb, c"}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 fn get_str_field(obj: ref void, key: str.StringView) ref u8 = trust {
@@ -325,7 +335,7 @@ fn find_sym_by_name(sym_list: ref void, name: ref u8) ref parser.Symbol = trust 
         if coll.PtrList.get(sym_list, i) is some v {
             val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
             if sym != none && sym.name != none {
-                if str.raw_cmp(sym.name, name) == 0 {
+                if cstr.cmp(sym.name, name) == 0 {
                     return sym
                 }
             }
@@ -348,7 +358,7 @@ fn find_import_sym(sym_list: ref void, alias: ref u8) ref parser.Symbol = trust 
         if coll.PtrList.get(sym_list, i) is some v {
             val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
             if sym != none && sym.kind == parser.SYM_MODULE &&
-            sym.name != none && str.raw_cmp(sym.name, alias) == 0 {
+            sym.name != none && cstr.cmp(sym.name, alias) == 0 {
                 return sym
             }
         }
@@ -369,8 +379,8 @@ fn param_name_eq(param_decl: ref u8, word: ref u8) bool = trust {
     if param_decl == none || word == none {
         return false
     }
-    val plen: i64 = str.len_raw(param_decl)
-    val wlen: i64 = str.len_raw(word)
+    val plen: i64 = cstr.len(param_decl)
+    val wlen: i64 = cstr.len(word)
     if plen <= 0 || wlen <= 0 {
         return false
     }
@@ -629,367 +639,365 @@ fn ident_len_h(s: ref u8, i: i64, len: i64) i64 = trust {
     return j - i
 }
 
-fn is_builtin_type_word(word: ref u8) bool = {
-    if word == none {
+fn is_builtin_type_word(word: str.StringView) bool = trust {
+    if str.is_empty(word) {
         return false
     }
-    return str.raw_cmp(word, c"i32") == 0 ||
-    str.raw_cmp(word, c"i64") == 0 ||
-    str.raw_cmp(word, c"u8") == 0 ||
-    str.raw_cmp(word, c"u32") == 0 ||
-    str.raw_cmp(word, c"u64") == 0 ||
-    str.raw_cmp(word, c"usize") == 0 ||
-    str.raw_cmp(word, c"f32") == 0 ||
-    str.raw_cmp(word, c"f64") == 0 ||
-    str.raw_cmp(word, c"bool") == 0 ||
-    str.raw_cmp(word, c"void") == 0 ||
-    str.raw_cmp(word, c"list") == 0 ||
-    str.raw_cmp(word, c"option") == 0 ||
-    str.raw_cmp(word, c"result") == 0
+    return str.eql(word, "i32") ||
+    str.eql(word, "i64") ||
+    str.eql(word, "u8") ||
+    str.eql(word, "u32") ||
+    str.eql(word, "u64") ||
+    str.eql(word, "usize") ||
+    str.eql(word, "f32") ||
+    str.eql(word, "f64") ||
+    str.eql(word, "bool") ||
+    str.eql(word, "void") ||
+    str.eql(word, "list") ||
+    str.eql(word, "option") ||
+    str.eql(word, "result")
 }
 
-fn builtin_type_signature(word: ref u8) ref u8 = {
+fn builtin_type_signature(word: ref u8) ref u8 = trust {
+    val w: str.StringView = str.from_cstr(word)
     if word == none {
         return none
     }
-    if str.raw_cmp(word, c"list") == 0 {
+    if str.eql(w, "list") {
         return c"list[T]"
     }
-    if str.raw_cmp(word, c"option") == 0 {
+    if str.eql(w, "option") {
         return c"option[T]"
     }
-    if str.raw_cmp(word, c"result") == 0 {
+    if str.eql(w, "result") {
         return c"result[T, E]"
     }
     return word
 }
 
-fn builtin_type_desc(word: ref u8) ref u8 = {
-    if word == none {
+fn builtin_type_desc(word: str.StringView) ref u8 = trust {
+    if str.is_empty(word) {
         return none
     }
-    if str.raw_cmp(word, c"i32") == 0 {
+    if str.eql(word, "i32") {
         return c"32-bit signed integer"
     }
-    if str.raw_cmp(word, c"i64") == 0 {
+    if str.eql(word, "i64") {
         return c"64-bit signed integer"
     }
-    if str.raw_cmp(word, c"u8") == 0 {
+    if str.eql(word, "u8") {
         return c"8-bit unsigned integer"
     }
-    if str.raw_cmp(word, c"u32") == 0 {
+    if str.eql(word, "u32") {
         return c"32-bit unsigned integer"
     }
-    if str.raw_cmp(word, c"u64") == 0 {
+    if str.eql(word, "u64") {
         return c"64-bit unsigned integer"
     }
-    if str.raw_cmp(word, c"usize") == 0 {
+    if str.eql(word, "usize") {
         return c"pointer-sized unsigned integer"
     }
-    if str.raw_cmp(word, c"f32") == 0 {
+    if str.eql(word, "f32") {
         return c"32-bit floating point number"
     }
-    if str.raw_cmp(word, c"f64") == 0 {
+    if str.eql(word, "f64") {
         return c"64-bit floating point number"
     }
-    if str.raw_cmp(word, c"bool") == 0 {
+    if str.eql(word, "bool") {
         return c"boolean value"
     }
-    if str.raw_cmp(word, c"void") == 0 {
+    if str.eql(word, "void") {
         return c"no value"
     }
-    if str.raw_cmp(word, c"list") == 0 {
+    if str.eql(word, "list") {
         return c"builtin growable list type"
     }
-    if str.raw_cmp(word, c"option") == 0 {
+    if str.eql(word, "option") {
         return c"builtin optional value type"
     }
-    if str.raw_cmp(word, c"result") == 0 {
+    if str.eql(word, "result") {
         return c"builtin success-or-error type"
     }
     return none
 }
 
-fn builtin_type_size(word: ref u8) i64 = {
-    if word == none {
+fn builtin_type_size(word: str.StringView) i64 = trust {
+    if str.is_empty(word) {
         return -1
     }
-    if str.raw_cmp(
-        word,
-        c"i32"
-    ) == 0 || str.raw_cmp(word, c"u32") == 0 || str.raw_cmp(word, c"f32") == 0 {
+    if str.eql(word, "i32") || str.eql(word, "u32") || str.eql(word, "f32") {
         return 4
     }
-    if str.raw_cmp(word, c"u8") == 0 || str.raw_cmp(word, c"bool") == 0 {
+    if str.eql(word, "u8") || str.eql(word, "bool") {
         return 1
     }
-    if str.raw_cmp(word, c"void") == 0 {
+    if str.eql(word, "void") {
         return 0
     }
-    if str.raw_cmp(word, c"list") == 0 {
+    if str.eql(word, "list") {
         return 24
     }
-    if str.raw_cmp(word, c"option") == 0 || str.raw_cmp(word, c"result") == 0 {
+    if str.eql(word, "option") || str.eql(word, "result") {
         return 16
     }
     return 8
 }
 
-pub fn keyword_signature(word: ref u8) ref u8 = {
-    if word == none {
+pub fn keyword_signature(word: str.StringView) ref u8 = trust {
+    if str.is_empty(word) {
         return none
     }
-    if str.raw_cmp(word, c"fn") == 0 {
+    if str.eql(word, "fn") {
         return c"fn name(params) ReturnType = { ... }"
     }
-    if str.raw_cmp(word, c"val") == 0 {
+    if str.eql(word, "val") {
         return c"val name: Type = value"
     }
-    if str.raw_cmp(word, c"mut") == 0 {
+    if str.eql(word, "mut") {
         return c"mut value"
     }
-    if str.raw_cmp(word, c"pub") == 0 {
+    if str.eql(word, "pub") {
         return c"pub declaration"
     }
-    if str.raw_cmp(word, c"type") == 0 {
+    if str.eql(word, "type") {
         return c"type Name = { field: Type ... }"
     }
-    if str.raw_cmp(word, c"enum") == 0 {
+    if str.eql(word, "enum") {
         return c"enum Name = { Variant ... }"
     }
-    if str.raw_cmp(word, c"union") == 0 {
+    if str.eql(word, "union") {
         return c"union Name = { Variant(Type) | ... }"
     }
-    if str.raw_cmp(word, c"if") == 0 {
+    if str.eql(word, "if") {
         return c"if condition { ... }"
     }
-    if str.raw_cmp(word, c"elif") == 0 {
+    if str.eql(word, "elif") {
         return c"elif condition { ... }"
     }
-    if str.raw_cmp(word, c"else") == 0 {
+    if str.eql(word, "else") {
         return c"else { ... }"
     }
-    if str.raw_cmp(word, c"for") == 0 {
+    if str.eql(word, "for") {
         return c"for { ... }  |  for item in collection { ... }"
     }
-    if str.raw_cmp(word, c"in") == 0 {
+    if str.eql(word, "in") {
         return c"for item in collection { ... }"
     }
-    if str.raw_cmp(word, c"match") == 0 {
+    if str.eql(word, "match") {
         return c"match value { pattern => { ... } }"
     }
-    if str.raw_cmp(word, c"return") == 0 {
+    if str.eql(word, "return") {
         return c"return value"
     }
-    if str.raw_cmp(word, c"break") == 0 {
+    if str.eql(word, "break") {
         return c"break"
     }
-    if str.raw_cmp(word, c"continue") == 0 {
+    if str.eql(word, "continue") {
         return c"continue"
     }
-    if str.raw_cmp(word, c"defer") == 0 {
+    if str.eql(word, "defer") {
         return c"defer statement"
     }
-    if str.raw_cmp(word, c"use") == 0 {
+    if str.eql(word, "use") {
         return c"val name = use(\"path/to/module\")"
     }
-    if str.raw_cmp(word, c"ref") == 0 {
+    if str.eql(word, "ref") {
         return c"ref Type"
     }
-    if str.raw_cmp(word, c"some") == 0 {
+    if str.eql(word, "some") {
         return c"some value"
     }
-    if str.raw_cmp(word, c"none") == 0 {
+    if str.eql(word, "none") {
         return c"none"
     }
-    if str.raw_cmp(word, c"ok") == 0 {
+    if str.eql(word, "ok") {
         return c"ok value"
     }
-    if str.raw_cmp(word, c"err") == 0 {
+    if str.eql(word, "err") {
         return c"err value"
     }
-    if str.raw_cmp(word, c"true") == 0 {
+    if str.eql(word, "true") {
         return c"true"
     }
-    if str.raw_cmp(word, c"false") == 0 {
+    if str.eql(word, "false") {
         return c"false"
     }
-    if str.raw_cmp(word, c"trust") == 0 {
+    if str.eql(word, "trust") {
         return c"trust expression"
     }
-    if str.raw_cmp(word, c"as") == 0 {
+    if str.eql(word, "as") {
         return c"value as Type"
     }
-    if str.raw_cmp(word, c"assert") == 0 {
+    if str.eql(word, "assert") {
         return c"assert condition"
     }
-    if str.raw_cmp(word, c"when") == 0 {
+    if str.eql(word, "when") {
         return c"when platform { ... }"
     }
-    if str.raw_cmp(word, c"extern") == 0 {
+    if str.eql(word, "extern") {
         return c"extern (C) fn name(params) ReturnType = \"symbol\""
     }
-    if str.raw_cmp(word, c"link") == 0 {
+    if str.eql(word, "link") {
         return c"link \"library\""
     }
-    if str.raw_cmp(word, c"guarded") == 0 {
+    if str.eql(word, "guarded") {
         return c"guarded pre { ... }"
     }
-    if str.raw_cmp(word, c"not") == 0 {
+    if str.eql(word, "not") {
         return c"not expression"
     }
-    if str.raw_cmp(word, c"test") == 0 {
+    if str.eql(word, "test") {
         return c"test { ... }"
     }
-    if str.raw_cmp(word, c"guard") == 0 {
+    if str.eql(word, "guard") {
         return c"guard condition"
     }
-    if str.raw_cmp(word, c"invariant") == 0 {
+    if str.eql(word, "invariant") {
         return c"invariant { condition }"
     }
-    if str.raw_cmp(word, c"pre") == 0 {
+    if str.eql(word, "pre") {
         return c"pre { check: condition }"
     }
-    if str.raw_cmp(word, c"post") == 0 {
+    if str.eql(word, "post") {
         return c"post { check: condition }"
     }
-    if str.raw_cmp(word, c"spec") == 0 {
+    if str.eql(word, "spec") {
         return c"spec Name = { ... }"
     }
-    if str.raw_cmp(word, c"self") == 0 {
+    if str.eql(word, "self") {
         return c"self  |  mut self"
     }
     return none
 }
 
-pub fn keyword_description(word: ref u8) ref u8 = {
-    if word == none {
+pub fn keyword_description(word: str.StringView) ref u8 = trust {
+    if str.is_empty(word) {
         return none
     }
-    if str.raw_cmp(word, c"fn") == 0 {
+    if str.eql(word, "fn") {
         return c"Declares a function. Add a receiver in parentheses to declare a namespaced method, for example `fn (Type) name(...)`."
     }
-    if str.raw_cmp(word, c"val") == 0 {
+    if str.eql(word, "val") {
         return c"Declares a variable binding. Bindings are immutable unless marked with `mut`."
     }
-    if str.raw_cmp(word, c"mut") == 0 {
+    if str.eql(word, "mut") {
         return c"Marks a binding, field, or parameter as mutable."
     }
-    if str.raw_cmp(word, c"pub") == 0 {
+    if str.eql(word, "pub") {
         return c"Makes a declaration visible to modules that import this file."
     }
-    if str.raw_cmp(word, c"type") == 0 {
+    if str.eql(word, "type") {
         return c"Declares a struct-like type with named fields. Fields are laid out in declaration order."
     }
-    if str.raw_cmp(word, c"enum") == 0 {
+    if str.eql(word, "enum") {
         return c"Declares an enum with named variants."
     }
-    if str.raw_cmp(word, c"union") == 0 {
+    if str.eql(word, "union") {
         return c"Declares a tagged union. Tagged variants carry values, for example `Circle(f64)`."
     }
-    if str.raw_cmp(word, c"if") == 0 {
+    if str.eql(word, "if") {
         return c"Runs a block when a condition is true. Use `elif` and `else` for additional branches."
     }
-    if str.raw_cmp(word, c"elif") == 0 {
+    if str.eql(word, "elif") {
         return c"Adds another conditional branch after an `if` block."
     }
-    if str.raw_cmp(word, c"else") == 0 {
+    if str.eql(word, "else") {
         return c"Runs a block when the preceding `if`/`elif` conditions are false."
     }
-    if str.raw_cmp(word, c"for") == 0 {
+    if str.eql(word, "for") {
         return c"Starts a loop. `for { ... }` loops until `break`; `for item in collection { ... }` iterates over a collection."
     }
-    if str.raw_cmp(word, c"in") == 0 {
+    if str.eql(word, "in") {
         return c"Introduces the collection being iterated by a `for` loop."
     }
-    if str.raw_cmp(word, c"match") == 0 {
+    if str.eql(word, "match") {
         return c"Branches on an option, result, union, or enum value. Each arm must use braces."
     }
-    if str.raw_cmp(word, c"return") == 0 {
+    if str.eql(word, "return") {
         return c"Returns from the enclosing function."
     }
-    if str.raw_cmp(word, c"break") == 0 {
+    if str.eql(word, "break") {
         return c"Exits the innermost loop."
     }
-    if str.raw_cmp(word, c"continue") == 0 {
+    if str.eql(word, "continue") {
         return c"Skips to the next iteration of the innermost loop."
     }
-    if str.raw_cmp(word, c"defer") == 0 {
+    if str.eql(word, "defer") {
         return c"Schedules a statement to run when the enclosing scope exits."
     }
-    if str.raw_cmp(word, c"use") == 0 {
+    if str.eql(word, "use") {
         return c"Imports another module. The resulting binding is used as `alias.member`."
     }
-    if str.raw_cmp(word, c"ref") == 0 {
+    if str.eql(word, "ref") {
         return c"A raw pointer/reference type. Null is written as `none`."
     }
-    if str.raw_cmp(word, c"some") == 0 {
+    if str.eql(word, "some") {
         return c"Constructs a present `option[T]` value."
     }
-    if str.raw_cmp(word, c"none") == 0 {
+    if str.eql(word, "none") {
         return c"The empty `option[T]` value, and the null pointer value."
     }
-    if str.raw_cmp(word, c"ok") == 0 {
+    if str.eql(word, "ok") {
         return c"Constructs the success value of a `result[T, E]`."
     }
-    if str.raw_cmp(word, c"err") == 0 {
+    if str.eql(word, "err") {
         return c"Constructs the error value of a `result[T, E]`."
     }
-    if str.raw_cmp(word, c"true") == 0 {
+    if str.eql(word, "true") {
         return c"The boolean true value."
     }
-    if str.raw_cmp(word, c"false") == 0 {
+    if str.eql(word, "false") {
         return c"The boolean false value."
     }
-    if str.raw_cmp(word, c"trust") == 0 {
+    if str.eql(word, "trust") {
         return c"Evaluates an expression while suppressing contract checks. Used to call untrusted functions and intrinsic operations."
     }
-    if str.raw_cmp(word, c"as") == 0 {
+    if str.eql(word, "as") {
         return c"Casts or reinterprets a value as another type."
     }
-    if str.raw_cmp(word, c"assert") == 0 {
+    if str.eql(word, "assert") {
         return c"Aborts the program when the condition is false."
     }
-    if str.raw_cmp(word, c"when") == 0 {
+    if str.eql(word, "when") {
         return c"Compiles the block only for the matching platform (for example `when linux { ... }`)."
     }
-    if str.raw_cmp(word, c"extern") == 0 {
+    if str.eql(word, "extern") {
         return c"Declares a function or type provided by an external C library."
     }
-    if str.raw_cmp(word, c"link") == 0 {
+    if str.eql(word, "link") {
         return c"Links an external library into the program."
     }
-    if str.raw_cmp(word, c"guarded") == 0 {
+    if str.eql(word, "guarded") {
         return c"Marks a contract check so it remains active in release builds."
     }
-    if str.raw_cmp(word, c"not") == 0 {
+    if str.eql(word, "not") {
         return c"Boolean negation."
     }
-    if str.raw_cmp(word, c"test") == 0 {
+    if str.eql(word, "test") {
         return c"Declares a unit test block. Run tests with `spectre <file.sx> --test`."
     }
-    if str.raw_cmp(word, c"guard") == 0 {
+    if str.eql(word, "guard") {
         return c"Declares an early-exit guard condition."
     }
-    if str.raw_cmp(word, c"invariant") == 0 {
+    if str.eql(word, "invariant") {
         return c"Declares a type invariant checked when the type is used with contracts."
     }
-    if str.raw_cmp(word, c"pre") == 0 {
+    if str.eql(word, "pre") {
         return c"Declares preconditions for a function."
     }
-    if str.raw_cmp(word, c"post") == 0 {
+    if str.eql(word, "post") {
         return c"Declares postconditions for a function."
     }
-    if str.raw_cmp(word, c"spec") == 0 {
+    if str.eql(word, "spec") {
         return c"Declares a specification of methods that an implementing type must provide."
     }
-    if str.raw_cmp(word, c"self") == 0 {
+    if str.eql(word, "self") {
         return c"Refers to the enclosing type in a method parameter list. Use `mut self` for a mutable receiver."
     }
     return none
 }
 
-pub fn is_keyword(word: ref u8) bool = {
+pub fn is_keyword(word: str.StringView) bool = trust {
     return keyword_description(word) != none
 }
 
@@ -1117,251 +1125,251 @@ fn keyword_at(i: i64) ref u8 = {
     return none
 }
 
-fn append_keyword_hover_contents(sb: str.StringBuilder, word: ref u8) void = trust {
-    str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-    sb_escape(sb, keyword_signature(word))
-    str.StringBuilder.append_cstr(sb, c"\\n```\\n\\n")
-    sb_escape(sb, keyword_description(word))
+fn append_keyword_hover_contents(sb: builder.StringBuilder, word: ref u8) void = trust {
+    builder.StringBuilder.append(sb, "```spectre\\n")
+    sb_escape_cstr(sb, keyword_signature(str.from_cstr(word)))
+    builder.StringBuilder.append(sb, "\\n```\\n\\n")
+    sb_escape_cstr(sb, keyword_description(str.from_cstr(word)))
 }
 
-pub fn intrinsic_signature(word: ref u8) ref u8 = {
-    if word == none {
+pub fn intrinsic_signature(word: str.StringView) ref u8 = trust {
+    if str.is_empty(word) {
         return none
     }
-    if str.raw_cmp(word, c"fmtalloc") == 0 {
+    if str.eql(word, "fmtalloc") {
         return c"@fmtalloc(format: ref u8, args: untyped) ref u8"
     }
-    if str.raw_cmp(word, c"len") == 0 {
+    if str.eql(word, "len") {
         return c"@len(list: list[T]) usize"
     }
-    if str.raw_cmp(word, c"addr") == 0 {
+    if str.eql(word, "addr") {
         return c"@addr(value: T) ref T"
     }
-    if str.raw_cmp(word, c"deref") == 0 {
+    if str.eql(word, "deref") {
         return c"@deref(ptr: ref T) T"
     }
-    if str.raw_cmp(word, c"alloc") == 0 {
+    if str.eql(word, "alloc") {
         return c"@alloc(size: usize) ref void"
     }
-    if str.raw_cmp(word, c"free") == 0 {
+    if str.eql(word, "free") {
         return c"@free(ptr: ref void) void"
     }
-    if str.raw_cmp(word, c"memcpy") == 0 {
+    if str.eql(word, "memcpy") {
         return c"@memcpy(dst: ref void, src: ref void, n: usize) void"
     }
-    if str.raw_cmp(word, c"memset") == 0 {
+    if str.eql(word, "memset") {
         return c"@memset(dst: ref void, value: u8, n: usize) void"
     }
-    if str.raw_cmp(word, c"memmove") == 0 {
+    if str.eql(word, "memmove") {
         return c"@memmove(dst: ref void, src: ref void, n: usize) void"
     }
-    if str.raw_cmp(word, c"puts") == 0 {
+    if str.eql(word, "puts") {
         return c"@puts(s: ref u8) i32"
     }
-    if str.raw_cmp(word, c"print") == 0 {
+    if str.eql(word, "print") {
         return c"@print(format: ref u8, args: untyped) i32"
     }
-    if str.raw_cmp(word, c"zeroed") == 0 {
+    if str.eql(word, "zeroed") {
         return c"@zeroed  |  @zeroed()"
     }
-    if str.raw_cmp(word, c"args") == 0 {
+    if str.eql(word, "args") {
         return c"@args() list[ref u8]"
     }
-    if str.raw_cmp(word, c"bitcast") == 0 {
+    if str.eql(word, "bitcast") {
         return c"@bitcast(value: T, TargetType) TargetType"
     }
-    if str.raw_cmp(word, c"load") == 0 {
+    if str.eql(word, "load") {
         return c"@load(ptr: ref T) T"
     }
-    if str.raw_cmp(word, c"load8") == 0 {
+    if str.eql(word, "load8") {
         return c"@load8(ptr: ref u8) u8"
     }
-    if str.raw_cmp(word, c"call") == 0 {
+    if str.eql(word, "call") {
         return c"@call(fn: ref fn, args: untyped) T"
     }
-    if str.raw_cmp(word, c"snprintf") == 0 {
+    if str.eql(word, "snprintf") {
         return c"@snprintf(buf: ref u8, size: usize, format: ref u8, args: untyped) i32"
     }
-    if str.raw_cmp(word, c"dprintf") == 0 {
+    if str.eql(word, "dprintf") {
         return c"@dprintf(fd: i32, format: ref u8, args: untyped) i32"
     }
-    if str.raw_cmp(word, c"reserve") == 0 {
+    if str.eql(word, "reserve") {
         return c"@reserve(list: list[T], capacity: usize) void"
     }
-    if str.raw_cmp(word, c"get") == 0 {
+    if str.eql(word, "get") {
         return c"@get(container: list[T], index: usize) option[T]"
     }
-    if str.raw_cmp(word, c"insert") == 0 {
+    if str.eql(word, "insert") {
         return c"@insert(list: list[T], index: usize, value: T) void"
     }
-    if str.raw_cmp(word, c"capacity") == 0 {
+    if str.eql(word, "capacity") {
         return c"@capacity(list: list[T]) usize"
     }
-    if str.raw_cmp(word, c"ptradd") == 0 {
+    if str.eql(word, "ptradd") {
         return c"@ptradd(ptr: ref T, offset: i64) ref T"
     }
-    if str.raw_cmp(word, c"store") == 0 {
+    if str.eql(word, "store") {
         return c"@store(ptr: ref T, value: T) void"
     }
-    if str.raw_cmp(word, c"store8") == 0 {
+    if str.eql(word, "store8") {
         return c"@store8(ptr: ref u8, value: u8) void"
     }
-    if str.raw_cmp(word, c"staticerror") == 0 {
+    if str.eql(word, "staticerror") {
         return c"@staticerror(message: ref u8) void"
     }
-    if str.raw_cmp(word, c"flush") == 0 {
+    if str.eql(word, "flush") {
         return c"@flush() void"
     }
-    if str.raw_cmp(word, c"stdin") == 0 {
+    if str.eql(word, "stdin") {
         return c"@stdin() ref void"
     }
-    if str.raw_cmp(word, c"stdout") == 0 {
+    if str.eql(word, "stdout") {
         return c"@stdout() ref void"
     }
-    if str.raw_cmp(word, c"fgets") == 0 {
+    if str.eql(word, "fgets") {
         return c"@fgets(buf: ref u8, size: i32, stream: ref void) ref u8"
     }
-    if str.raw_cmp(word, c"atoi") == 0 {
+    if str.eql(word, "atoi") {
         return c"@atoi(s: ref u8) i64"
     }
-    if str.raw_cmp(word, c"itoa") == 0 {
+    if str.eql(word, "itoa") {
         return c"@itoa(value: i64) ref u8"
     }
     return none
 }
 
-pub fn intrinsic_description(word: ref u8) ref u8 = {
-    if word == none {
+pub fn intrinsic_description(word: str.StringView) ref u8 = trust {
+    if str.is_empty(word) {
         return none
     }
-    if str.raw_cmp(word, c"fmtalloc") == 0 {
+    if str.eql(word, "fmtalloc") {
         return c"Formats a string and returns it as a newly heap-allocated `ref u8`. Takes a format string and an untyped argument pack. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"len") == 0 {
+    if str.eql(word, "len") {
         return c"Returns the number of elements in a `list[T]`."
     }
-    if str.raw_cmp(word, c"addr") == 0 {
+    if str.eql(word, "addr") {
         return c"Returns the address of a value as a pointer. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"deref") == 0 {
+    if str.eql(word, "deref") {
         return c"Dereferences a pointer and returns the value it points to. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"alloc") == 0 {
+    if str.eql(word, "alloc") {
         return c"Allocates `size` bytes of heap memory and returns an untyped pointer. Cast the result to the required pointer type."
     }
-    if str.raw_cmp(word, c"free") == 0 {
+    if str.eql(word, "free") {
         return c"Frees memory previously returned by `@alloc` or `@realloc`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"memcpy") == 0 {
+    if str.eql(word, "memcpy") {
         return c"Copies `n` bytes from `src` to `dst`. The regions must not overlap; use `@memmove` for overlapping memory. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"memset") == 0 {
+    if str.eql(word, "memset") {
         return c"Fills `n` bytes starting at `dst` with `value`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"memmove") == 0 {
+    if str.eql(word, "memmove") {
         return c"Copies `n` bytes from `src` to `dst`, safely handling overlapping memory. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"puts") == 0 {
+    if str.eql(word, "puts") {
         return c"Writes a null-terminated string to stdout followed by a newline."
     }
-    if str.raw_cmp(word, c"print") == 0 {
+    if str.eql(word, "print") {
         return c"Prints a formatted string to stdout. Takes a format string and an untyped argument pack. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"zeroed") == 0 {
+    if str.eql(word, "zeroed") {
         return c"Creates a zero-initialized value of the expected type. Useful for structs and fixed-size arrays; the type is inferred from context."
     }
-    if str.raw_cmp(word, c"args") == 0 {
+    if str.eql(word, "args") {
         return c"Returns the command-line arguments as a `list[ref u8]`."
     }
-    if str.raw_cmp(word, c"bitcast") == 0 {
+    if str.eql(word, "bitcast") {
         return c"Reinterprets `value` as `TargetType` without conversion. Syntax: `@bitcast(value, TargetType)`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"load") == 0 {
+    if str.eql(word, "load") {
         return c"Loads a word (pointer-sized value) from `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"load8") == 0 {
+    if str.eql(word, "load8") {
         return c"Loads a single byte from `ptr` and zero-extends it. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"call") == 0 {
+    if str.eql(word, "call") {
         return c"Calls the function pointer `fn` with the supplied arguments. This intrinsic is variadic and returns the function's return type."
     }
-    if str.raw_cmp(word, c"snprintf") == 0 {
+    if str.eql(word, "snprintf") {
         return c"Formats output into `buf` with a maximum size of `size` bytes, like C `snprintf`. Returns the number of characters that would have been written."
     }
-    if str.raw_cmp(word, c"dprintf") == 0 {
+    if str.eql(word, "dprintf") {
         return c"Writes formatted output to the file descriptor `fd`, like C `dprintf`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"reserve") == 0 {
+    if str.eql(word, "reserve") {
         return c"Reserves capacity for at least `capacity` elements in a `list[T]`."
     }
-    if str.raw_cmp(word, c"get") == 0 {
+    if str.eql(word, "get") {
         return c"Returns `some value` when `index` is in bounds, otherwise `none`. Also supports indexing into fixed-size arrays. Returns `option[T]`."
     }
-    if str.raw_cmp(word, c"insert") == 0 {
+    if str.eql(word, "insert") {
         return c"Inserts `value` at `index` in a `list[T]`, shifting later elements."
     }
-    if str.raw_cmp(word, c"capacity") == 0 {
+    if str.eql(word, "capacity") {
         return c"Returns the current capacity of a `list[T]`."
     }
-    if str.raw_cmp(word, c"ptradd") == 0 {
+    if str.eql(word, "ptradd") {
         return c"Adds a byte `offset` to a pointer and returns the resulting pointer. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"store") == 0 {
+    if str.eql(word, "store") {
         return c"Stores a word (pointer-sized value) at `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"store8") == 0 {
+    if str.eql(word, "store8") {
         return c"Stores a single byte at `ptr`. This is an unsafe intrinsic and must be used in a `trust` context."
     }
-    if str.raw_cmp(word, c"staticerror") == 0 {
+    if str.eql(word, "staticerror") {
         return c"Triggers a compile-time error with the given message. Typically used inside `when` blocks; elsewhere it is a no-op."
     }
-    if str.raw_cmp(word, c"flush") == 0 {
+    if str.eql(word, "flush") {
         return c"Flushes stdout."
     }
-    if str.raw_cmp(word, c"stdin") == 0 {
+    if str.eql(word, "stdin") {
         return c"Returns the standard input stream."
     }
-    if str.raw_cmp(word, c"stdout") == 0 {
+    if str.eql(word, "stdout") {
         return c"Returns the standard output stream."
     }
-    if str.raw_cmp(word, c"fgets") == 0 {
+    if str.eql(word, "fgets") {
         return c"Reads at most `size - 1` bytes from `stream` into `buf`, like C `fgets`. Returns `buf`, or `none` on EOF/error."
     }
-    if str.raw_cmp(word, c"atoi") == 0 {
+    if str.eql(word, "atoi") {
         return c"Converts a null-terminated ASCII string to an integer."
     }
-    if str.raw_cmp(word, c"itoa") == 0 {
+    if str.eql(word, "itoa") {
         return c"Converts an integer to its ASCII string representation."
     }
     return none
 }
 
-pub fn is_intrinsic_word(word: ref u8) bool = {
+pub fn is_intrinsic_word(word: str.StringView) bool = trust {
     return intrinsic_signature(word) != none
 }
 
-fn append_intrinsic_hover_contents(sb: str.StringBuilder, word: ref u8) void = trust {
-    str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-    sb_escape(sb, intrinsic_signature(word))
-    str.StringBuilder.append_cstr(sb, c"\\n```\\n\\n")
-    sb_escape(sb, intrinsic_description(word))
+fn append_intrinsic_hover_contents(sb: builder.StringBuilder, word: ref u8) void = trust {
+    builder.StringBuilder.append(sb, "```spectre\\n")
+    sb_escape_cstr(sb, intrinsic_signature(str.from_cstr(word)))
+    builder.StringBuilder.append(sb, "\\n```\\n\\n")
+    sb_escape_cstr(sb, intrinsic_description(str.from_cstr(word)))
 }
 
 fn strip_type_wrappers(s: ref u8) ref u8 = trust {
     if s == none {
         return none
     }
-    val len: i64 = str.len_raw(s)
+    val len: i64 = cstr.len(s)
     val i: mut i64 = skip_ws_h(s, 0, len)
     for {
         if i >= len {
             break
         }
-        if starts_with_h(@ptradd(s, i), len - i, "mut ", 4) {
+        if starts_with_h(str.view(@ptradd(s, i), len - i), "mut ") {
             i = skip_ws_h(s, i + 4, len)
-        } elif starts_with_h(@ptradd(s, i), len - i, "ref ", 4) {
+        } elif starts_with_h(str.view(@ptradd(s, i), len - i), "ref ") {
             i = skip_ws_h(s, i + 4, len)
-        } elif starts_with_h(@ptradd(s, i), len - i, "const ", 6) {
+        } elif starts_with_h(str.view(@ptradd(s, i), len - i), "const ") {
             i = skip_ws_h(s, i + 6, len)
         } else {
             break
@@ -1415,15 +1423,15 @@ pub fn decl_explicit_type(decl: ref u8) ref u8 = trust {
     if decl == none {
         return none
     }
-    val len: i64 = str.len_raw(decl)
+    val len: i64 = cstr.len(decl)
     val i: mut i64 = skip_ws_h(decl, 0, len)
     if i >= len {
         return none
     }
-    if starts_with_h(@ptradd(decl, i), len - i, "pub ", 4) {
+    if starts_with_h(str.view(@ptradd(decl, i), len - i), "pub ") {
         i = skip_ws_h(decl, i + 4, len)
     }
-    if !starts_with_h(@ptradd(decl, i), len - i, "val ", 4) {
+    if !starts_with_h(str.view(@ptradd(decl, i), len - i), "val ") {
         return none
     }
     i = skip_ws_h(decl, i + 4, len)
@@ -1453,7 +1461,7 @@ pub fn decl_initializer(decl: ref u8) ref u8 = trust {
     if decl == none {
         return none
     }
-    val len: i64 = str.len_raw(decl)
+    val len: i64 = cstr.len(decl)
     val eq: i64 = find_equals_h(decl, len)
     if eq < 0 {
         return none
@@ -1470,7 +1478,7 @@ pub fn extract_param_type(decl: ref u8) ref u8 = trust {
     if decl == none {
         return none
     }
-    val len: i64 = str.len_raw(decl)
+    val len: i64 = cstr.len(decl)
     val i: mut i64 = skip_ws_h(decl, 0, len)
     val name_len: i64 = ident_len_h(decl, i, len)
     if name_len <= 0 {
@@ -1488,22 +1496,18 @@ pub fn extract_param_type(decl: ref u8) ref u8 = trust {
     return raw_dup_h(@ptradd(decl, i), type_len)
 }
 
-fn find_last_substr_h(s: ref u8, needle: ref u8) i64 = trust {
-    if s == none || needle == none {
-        return -1
-    }
-    val slen: i64 = str.len_raw(s)
-    val nlen: i64 = str.len_raw(needle)
-    if nlen <= 0 || nlen > slen {
+fn find_last_substr_h(s: str.StringView, needle: str.StringView) i64 = trust {
+    if str.is_empty(needle) || needle.len > s.len {
         return -1
     }
     val best: mut i64 = -1
+    val limit: i64 = s.len - needle.len
     val i: mut i64 = 0
     for {
-        if i + nlen > slen {
+        if i > limit {
             break
         }
-        if strncmp(@ptradd(s, i), needle, nlen as usize) == 0 {
+        if str.eql(str.slice(s, i, i + needle.len), needle) {
             best = i
         }
         i++
@@ -1519,7 +1523,7 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
     if expr == none {
         return none
     }
-    val raw_len: i64 = str.len_raw(expr)
+    val raw_len: i64 = cstr.len(expr)
     val i: i64 = skip_ws_h(expr, 0, raw_len)
     val expr_len: i64 = trim_right_len_h(@ptradd(expr, i), raw_len - i)
     if expr_len <= 0 {
@@ -1532,9 +1536,9 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
         return none
     }
     for {
-        val slen: i64 = str.len_raw(stripped)
+        val slen: i64 = cstr.len(stripped)
         val si: i64 = skip_ws_h(stripped, 0, slen)
-        if starts_with_h(@ptradd(stripped, si), slen - si, "trust ", 6) {
+        if starts_with_h(str.view(@ptradd(stripped, si), slen - si), "trust ") {
             val next: ref u8 = raw_dup_h(
                 @ptradd(stripped, skip_ws_h(stripped, si + 6, slen)),
                 trim_right_len_h(
@@ -1544,7 +1548,7 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
             )
             @free(stripped)
             stripped = next
-        } elif starts_with_h(@ptradd(stripped, si), slen - si, "some ", 5) {
+        } elif starts_with_h(str.view(@ptradd(stripped, si), slen - si), "some ") {
             val ns: i64 = skip_ws_h(stripped, si + 5, slen)
             val next: ref u8 = raw_dup_h(
                 @ptradd(stripped, ns),
@@ -1552,7 +1556,7 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
             )
             @free(stripped)
             stripped = next
-        } elif starts_with_h(@ptradd(stripped, si), slen - si, "ok ", 3) {
+        } elif starts_with_h(str.view(@ptradd(stripped, si), slen - si), "ok ") {
             val ns: i64 = skip_ws_h(stripped, si + 3, slen)
             val next: ref u8 = raw_dup_h(
                 @ptradd(stripped, ns),
@@ -1568,7 +1572,7 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
         }
     }
 
-    val len: i64 = str.len_raw(stripped)
+    val len: i64 = cstr.len(stripped)
     val start: i64 = skip_ws_h(stripped, 0, len)
     if start >= len {
         @free(stripped)
@@ -1576,7 +1580,7 @@ pub fn infer_expr_type_name(expr: ref u8) ref u8 = trust {
     }
 
     // A cast at the end is often the clearest type information.
-    val as_idx: i64 = find_last_substr_h(stripped, c" as ")
+    val as_idx: i64 = find_last_substr_h(str.from_cstr(stripped), " as ")
     val first: u8 = @load8(@ptradd(stripped, start))
     if first == '@' || first == '(' || first == '[' {
         if as_idx >= 0 {
@@ -1637,7 +1641,7 @@ fn resolve_type_symbol(
         return none
     }
 
-    val len: i64 = str.len_raw(expr)
+    val len: i64 = cstr.len(expr)
     val bracket: mut i64 = -1
     val bi: mut i64 = 0
     for {
@@ -1659,7 +1663,7 @@ fn resolve_type_symbol(
         }
     }
 
-    val elen: i64 = str.len_raw(expr)
+    val elen: i64 = cstr.len(expr)
     val last_dot: mut i64 = -1
     val di: mut i64 = 0
     for {
@@ -1843,7 +1847,7 @@ fn method_receiver_matches(receiver: ref u8, type_name: ref u8) bool = trust {
     if receiver == none || type_name == none {
         return false
     }
-    val rlen: i64 = str.len_raw(receiver)
+    val rlen: i64 = cstr.len(receiver)
     val ti: i64 = skip_ws_h(receiver, 0, rlen)
     val tl: i64 = trim_right_len_h(@ptradd(receiver, ti), rlen - ti)
     if tl <= 0 {
@@ -1862,7 +1866,7 @@ fn method_receiver_matches(receiver: ref u8, type_name: ref u8) bool = trust {
     }
     val start: i64 = ti + last_dot + 1
     val name_len: i64 = tl - last_dot - 1
-    return name_len == str.len_raw(type_name) &&
+    return name_len == cstr.len(type_name) &&
     strncmp(@ptradd(receiver, start), type_name, name_len as usize) == 0
 }
 
@@ -1899,7 +1903,7 @@ fn line_bounds_for_line_h(
         return
     }
 
-    val len: i64 = str.len_raw(content)
+    val len: i64 = cstr.len(content)
     val line_num: mut i64 = 0
     val i: mut i64 = 0
     val start: mut i64 = 0
@@ -1939,16 +1943,16 @@ fn line_matches_variable_decl(line: ref u8, line_len: i64, word: ref u8) bool = 
     if line == none || word == none || line_len <= 0 {
         return false
     }
-    val wlen: i64 = str.len_raw(word)
+    val wlen: i64 = cstr.len(word)
     val i: mut i64 = skip_ws_h(line, 0, line_len)
     if i >= line_len {
         return false
     }
-    if starts_with_h(@ptradd(line, i), line_len - i, "pub ", 4) {
+    if starts_with_h(str.view(@ptradd(line, i), line_len - i), "pub ") {
         i = skip_ws_h(line, i + 4, line_len)
     }
 
-    if starts_with_h(@ptradd(line, i), line_len - i, "val ", 4) {
+    if starts_with_h(str.view(@ptradd(line, i), line_len - i), "val ") {
         i = skip_ws_h(line, i + 4, line_len)
         val name_len: i64 = ident_len_h(line, i, line_len)
         if name_len != wlen || name_len <= 0 {
@@ -1958,13 +1962,13 @@ fn line_matches_variable_decl(line: ref u8, line_len: i64, word: ref u8) bool = 
             return false
         }
         i = skip_ws_h(line, i + name_len, line_len)
-        if starts_with_h(@ptradd(line, i), line_len - i, "= use(\"", 7) {
+        if starts_with_h(str.view(@ptradd(line, i), line_len - i), "= use(\"") {
             return false
         }
         return true
     }
 
-    if starts_with_h(@ptradd(line, i), line_len - i, "for ", 4) {
+    if starts_with_h(str.view(@ptradd(line, i), line_len - i), "for ") {
         i = skip_ws_h(line, i + 4, line_len)
         val name_len: i64 = ident_len_h(line, i, line_len)
         if name_len != wlen || name_len <= 0 {
@@ -1974,7 +1978,7 @@ fn line_matches_variable_decl(line: ref u8, line_len: i64, word: ref u8) bool = 
             return false
         }
         i = skip_ws_h(line, i + name_len, line_len)
-        if starts_with_h(@ptradd(line, i), line_len - i, "in", 2) {
+        if starts_with_h(str.view(@ptradd(line, i), line_len - i), "in") {
             val next_ok: bool = (i + 2 >= line_len) || !is_ident_cont_h(@load8(@ptradd(
                         line,
                         i + 2
@@ -2193,7 +2197,7 @@ fn find_word_col_in_line(content: ref u8, target_line: i64, word: ref u8) i64 = 
     if ls < 0 || le < ls {
         return 0
     }
-    val wlen: i64 = str.len_raw(word)
+    val wlen: i64 = cstr.len(word)
     val i: mut i64 = ls
     for {
         if i >= le {
@@ -2250,7 +2254,7 @@ fn extract_definition_block(content: ref u8, line: i64) ref u8 = trust {
         return none
     }
 
-    val len: i64 = str.len_raw(content)
+    val len: i64 = cstr.len(content)
     val i: mut i64 = ls
     val seen_brace: mut i64 = 0
     val depth: mut i64 = 0
@@ -2341,26 +2345,8 @@ fn find_matching_close_h(
     return -1
 }
 
-fn contains_substr_h(s: ref u8, needle: ref u8) bool = trust {
-    if s == none || needle == none {
-        return false
-    }
-    val slen: i64 = str.len_raw(s)
-    val nlen: i64 = str.len_raw(needle)
-    if nlen <= 0 || nlen > slen {
-        return false
-    }
-    val i: mut i64 = 0
-    for {
-        if i + nlen > slen {
-            break
-        }
-        if strncmp(@ptradd(s, i), needle, nlen as usize) == 0 {
-            return true
-        }
-        i++
-    }
-    return false
+fn contains_substr_h(s: str.StringView, needle: str.StringView) bool = trust {
+    return str.contains(s, needle)
 }
 
 fn estimate_type_symbol_size(
@@ -2388,7 +2374,7 @@ fn estimate_type_symbol_size(
         return 8
     }
 
-    val dlen: i64 = str.len_raw(def)
+    val dlen: i64 = cstr.len(def)
     val open_idx: mut i64 = -1
     val i: mut i64 = 0
     for {
@@ -2450,7 +2436,7 @@ fn estimate_type_symbol_size(
                 if seg_len > 0 {
                     val variant: ref u8 = raw_dup_h(@ptradd(body, seg_start), seg_len)
                     if variant != none {
-                        val vlen: i64 = str.len_raw(variant)
+                        val vlen: i64 = cstr.len(variant)
                         val open_paren: mut i64 = -1
                         val k: mut i64 = 0
                         for {
@@ -2570,7 +2556,7 @@ fn estimate_type_symbol_size(
                 if raw_len > 0 {
                     val field_line: ref u8 = raw_dup_h(@ptradd(body, line_start), raw_len)
                     if field_line != none {
-                        val flen: i64 = str.len_raw(field_line)
+                        val flen: i64 = cstr.len(field_line)
                         val colon_idx: mut i64 = -1
                         val k: mut i64 = 0
                         for {
@@ -2644,7 +2630,7 @@ fn estimate_type_expr_size(
         return 8
     }
 
-    val expr_len: i64 = str.len_raw(type_expr)
+    val expr_len: i64 = cstr.len(type_expr)
     val start: i64 = skip_ws_h(type_expr, 0, expr_len)
     val trimmed_len: i64 = trim_right_len_h(@ptradd(type_expr, start), expr_len - start)
     if trimmed_len <= 0 {
@@ -2655,9 +2641,9 @@ fn estimate_type_expr_size(
     if expr == none {
         return 8
     }
-    val len: i64 = str.len_raw(expr)
+    val len: i64 = cstr.len(expr)
 
-    if starts_with_h(expr, len, "mut ", 4) {
+    if starts_with_h(str.view(expr, len), "mut ") {
         val out: i64 = estimate_type_expr_size(
             doc_store,
             sym_store,
@@ -2669,22 +2655,22 @@ fn estimate_type_expr_size(
         @free(expr)
         return out
     }
-    if starts_with_h(expr, len, "ref ", 4) {
+    if starts_with_h(str.view(expr, len), "ref ") {
         @free(expr)
         return 8
     }
 
-    val builtin_size: i64 = builtin_type_size(expr)
-    if builtin_size >= 0 && is_builtin_type_word(expr) {
+    val builtin_size: i64 = builtin_type_size(str.from_cstr(expr))
+    if builtin_size >= 0 && is_builtin_type_word(str.from_cstr(expr)) {
         @free(expr)
         return builtin_size
     }
 
-    if starts_with_h(expr, len, "list[", 5) {
+    if starts_with_h(str.view(expr, len), "list[") {
         @free(expr)
         return 24
     }
-    if starts_with_h(expr, len, "option[", 7) {
+    if starts_with_h(str.view(expr, len), "option[") {
         val close_idx: i64 = find_matching_close_h(expr, len, 6, '[', ']')
         if close_idx > 6 {
             val inner: ref u8 = raw_dup_h(@ptradd(expr, 7), close_idx - 7)
@@ -2705,12 +2691,12 @@ fn estimate_type_expr_size(
         @free(expr)
         return 16
     }
-    if starts_with_h(expr, len, "result[", 7) {
+    if starts_with_h(str.view(expr, len), "result[") {
         val close_idx: i64 = find_matching_close_h(expr, len, 6, '[', ']')
         if close_idx > 6 {
             val inner: ref u8 = raw_dup_h(@ptradd(expr, 7), close_idx - 7)
             if inner != none {
-                val ilen: i64 = str.len_raw(inner)
+                val ilen: i64 = cstr.len(inner)
                 val sq_depth: mut i64 = 0
                 val paren_depth: mut i64 = 0
                 val comma_idx: mut i64 = -1
@@ -2821,7 +2807,7 @@ fn estimate_type_expr_size(
 }
 
 fn append_type_hover_contents(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     doc_store: mut ref void,
     sym_store: mut ref void,
     _: ref u8,
@@ -2835,25 +2821,25 @@ fn append_type_hover_contents(
     val definition: ref u8 = extract_definition_block(def_content, sym.line)
     val approx_size: i64 = estimate_type_symbol_size(doc_store, sym_store, sym, 0)
 
-    str.StringBuilder.append_cstr(sb, c"```spectre\\n")
+    builder.StringBuilder.append(sb, "```spectre\\n")
     if definition != none {
-        sb_escape(sb, definition)
+        sb_escape_cstr(sb, definition)
     } elif sym.signature != none {
-        sb_escape(sb, sym.signature)
+        sb_escape_cstr(sb, sym.signature)
     } elif sym.name != none {
-        sb_escape(sb, sym.name)
+        sb_escape_cstr(sb, sym.name)
     }
-    str.StringBuilder.append_cstr(sb, c"\\n```")
+    builder.StringBuilder.append(sb, "\\n```")
 
     if approx_size >= 0 {
-        str.StringBuilder.append_cstr(sb, c"\\n\\nApprox. size: ")
+        builder.StringBuilder.append(sb, "\\n\\nApprox. size: ")
         sb_append_int(sb, approx_size)
-        str.StringBuilder.append_cstr(sb, c" bytes")
+        builder.StringBuilder.append(sb, " bytes")
     }
 
-    if sym.doc != none && str.len_raw(sym.doc) > 0 {
-        str.StringBuilder.append_cstr(sb, c"\\n\\n")
-        sb_escape(sb, sym.doc)
+    if sym.doc != none && cstr.len(sym.doc) > 0 {
+        builder.StringBuilder.append(sb, "\\n\\n")
+        sb_escape_cstr(sb, sym.doc)
     }
 
     if definition != none {
@@ -2861,14 +2847,14 @@ fn append_type_hover_contents(
     }
 }
 
-fn append_builtin_type_hover_contents(sb: str.StringBuilder, word: ref u8) void = trust {
-    str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-    sb_escape(sb, builtin_type_signature(word))
-    str.StringBuilder.append_cstr(sb, c"\\n```\\n\\n")
-    sb_escape(sb, builtin_type_desc(word))
-    str.StringBuilder.append_cstr(sb, c"\\n\\nApprox. size: ")
-    sb_append_int(sb, builtin_type_size(word))
-    str.StringBuilder.append_cstr(sb, c" bytes")
+fn append_builtin_type_hover_contents(sb: builder.StringBuilder, word: ref u8) void = trust {
+    builder.StringBuilder.append(sb, "```spectre\\n")
+    sb_escape_cstr(sb, builtin_type_signature(word))
+    builder.StringBuilder.append(sb, "\\n```\\n\\n")
+    sb_escape_cstr(sb, builtin_type_desc(str.from_cstr(word)))
+    builder.StringBuilder.append(sb, "\\n\\nApprox. size: ")
+    sb_append_int(sb, builtin_type_size(str.from_cstr(word)))
+    builder.StringBuilder.append(sb, " bytes")
 }
 
 fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trust {
@@ -2898,10 +2884,10 @@ fn symbol_is_unverified(doc_store: ref void, sym: ref parser.Symbol) bool = trus
     if line_text == none {
         return false
     }
-    val llen: i64 = str.len_raw(line_text)
-    val unverified: bool = contains_substr_h(line_text, c"= trust") ||
-    contains_substr_h(line_text, c" = trust") ||
-    starts_with_h(line_text, llen, "trust ", 6)
+    val llen: i64 = cstr.len(line_text)
+    val unverified: bool = contains_substr_h(str.from_cstr(line_text), "= trust") ||
+    contains_substr_h(str.from_cstr(line_text), " = trust") ||
+    starts_with_h(str.view(line_text, llen), "trust ")
     @free(line_text)
     return unverified
 }
@@ -2931,23 +2917,23 @@ fn sym_kind_to_lsp(kind: i64) i64 = {
     return 13
 }
 
-fn append_range(sb: str.StringBuilder, line: i64, cs: i64, ce: i64) void = trust {
-    str.StringBuilder.append_cstr(sb, c"{\"start\":{\"line\":")
+fn append_range(sb: builder.StringBuilder, line: i64, cs: i64, ce: i64) void = trust {
+    builder.StringBuilder.append(sb, "{\"start\":{\"line\":")
     sb_append_int(sb, line)
-    str.StringBuilder.append_cstr(sb, c",\"character\":")
+    builder.StringBuilder.append(sb, ",\"character\":")
     sb_append_int(sb, cs)
-    str.StringBuilder.append_cstr(sb, c"},\"end\":{\"line\":")
+    builder.StringBuilder.append(sb, "},\"end\":{\"line\":")
     sb_append_int(sb, line)
-    str.StringBuilder.append_cstr(sb, c",\"character\":")
+    builder.StringBuilder.append(sb, ",\"character\":")
     sb_append_int(sb, ce)
-    str.StringBuilder.append_cstr(sb, c"}}")
+    builder.StringBuilder.append(sb, "}}")
 }
 
 fn first_line_dup(s: ref u8) ref u8 = trust {
     if s == none {
         return none
     }
-    val len: i64 = str.len_raw(s)
+    val len: i64 = cstr.len(s)
     val i: mut i64 = 0
     for {
         if i >= len {
@@ -3049,28 +3035,20 @@ pub fn find_completion_context(
     }
 }
 
-fn prefix_matches_h(name: ref u8, prefix: ref u8) bool = trust {
-    if name == none {
-        return false
-    }
-    if prefix == none {
+fn prefix_matches_h(name: str.StringView, prefix: str.StringView) bool = trust {
+    if str.is_empty(prefix) {
         return true
     }
-    val nlen: i64 = str.len_raw(name)
-    val plen: i64 = str.len_raw(prefix)
-    if plen <= 0 {
-        return true
-    }
-    if plen > nlen {
+    if prefix.len > name.len {
         return false
     }
     val i: mut i64 = 0
     for {
-        if i >= plen {
+        if i >= prefix.len {
             break
         }
-        val a: mut u8 = @load8(@ptradd(name, i))
-        val b: mut u8 = @load8(@ptradd(prefix, i))
+        val a: mut u8 = @load8(@ptradd(name.ptr, i))
+        val b: mut u8 = @load8(@ptradd(prefix.ptr, i))
         if a >= 65 && a <= 90 {
             a += 32
         }
@@ -3086,7 +3064,7 @@ fn prefix_matches_h(name: ref u8, prefix: ref u8) bool = trust {
 }
 
 fn append_completion_item(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     first: ref i64,
     label: ref u8,
     detail: ref u8,
@@ -3100,37 +3078,37 @@ fn append_completion_item(
         return
     }
     if @load(first) == 0 {
-        str.StringBuilder.append_cstr(sb, c",")
+        builder.StringBuilder.append(sb, ",")
     }
     @store(first, 0 as i64)
 
-    str.StringBuilder.append_cstr(sb, c"{\"label\":\"")
-    sb_escape(sb, label)
-    str.StringBuilder.append_cstr(sb, c"\",\"kind\":")
+    builder.StringBuilder.append(sb, "{\"label\":\"")
+    sb_escape_cstr(sb, label)
+    builder.StringBuilder.append(sb, "\",\"kind\":")
     sb_append_int(sb, kind)
 
-    if detail != none && str.len_raw(detail) > 0 {
-        str.StringBuilder.append_cstr(sb, c",\"detail\":\"")
-        sb_escape(sb, detail)
-        str.StringBuilder.append_cstr(sb, c"\"")
+    if detail != none && cstr.len(detail) > 0 {
+        builder.StringBuilder.append(sb, ",\"detail\":\"")
+        sb_escape_cstr(sb, detail)
+        builder.StringBuilder.append(sb, "\"")
     }
-    if doc != none && str.len_raw(doc) > 0 {
-        str.StringBuilder.append_cstr(sb, c",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
-        sb_escape(sb, doc)
-        str.StringBuilder.append_cstr(sb, c"\"}")
+    if doc != none && cstr.len(doc) > 0 {
+        builder.StringBuilder.append(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
+        sb_escape_cstr(sb, doc)
+        builder.StringBuilder.append(sb, "\"}")
     }
     if replace_start >= 0 && replace_end >= replace_start {
-        str.StringBuilder.append_cstr(sb, c",\"textEdit\":{\"range\":")
+        builder.StringBuilder.append(sb, ",\"textEdit\":{\"range\":")
         append_range(sb, replace_line, replace_start, replace_end)
-        str.StringBuilder.append_cstr(sb, c",\"newText\":\"")
-        sb_escape(sb, label)
-        str.StringBuilder.append_cstr(sb, c"\"}")
+        builder.StringBuilder.append(sb, ",\"newText\":\"")
+        sb_escape_cstr(sb, label)
+        builder.StringBuilder.append(sb, "\"}")
     }
-    str.StringBuilder.append_cstr(sb, c"}")
+    builder.StringBuilder.append(sb, "}")
 }
 
 fn append_symbol_completion(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     first: ref i64,
     sym: ref parser.Symbol,
     prefix: ref u8,
@@ -3141,7 +3119,7 @@ fn append_symbol_completion(
     if sym == none || sym.name == none {
         return
     }
-    if !prefix_matches_h(sym.name, prefix) {
+    if !prefix_matches_h(str.from_cstr(sym.name), str.from_cstr(prefix)) {
         return
     }
     val detail: mut ref u8 = sym.signature
@@ -3155,7 +3133,7 @@ fn append_symbol_completion(
 }
 
 fn append_method_completions(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     first: ref i64,
     sym_store: mut ref void,
     doc_store: mut ref void,
@@ -3200,7 +3178,7 @@ fn append_method_completions(
 }
 
 fn append_field_completions(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     first: ref i64,
     doc_store: mut ref void,
     sym_store: mut ref void,
@@ -3289,7 +3267,7 @@ fn resolve_chain_type_symbol(
     if base == none || depth > 8 {
         return none
     }
-    val len: i64 = str.len_raw(base)
+    val len: i64 = cstr.len(base)
     if len <= 0 {
         return none
     }
@@ -3384,18 +3362,18 @@ fn resolve_chain_type_symbol(
 }
 
 fn send_intrinsic_hover(id_raw: ref void, word: ref u8) void = trust {
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(
+    builder.StringBuilder.append(
         sb,
-        c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+        ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
     )
     append_intrinsic_hover_contents(sb, word)
-    str.StringBuilder.append_cstr(sb, c"\"}}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "\"}}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 fn send_field_hover(
@@ -3407,30 +3385,30 @@ fn send_field_hover(
         send_null_result(id_raw)
         return
     }
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(
+    builder.StringBuilder.append(
         sb,
-        c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+        ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
     )
-    str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-    sb_escape(sb, field.name)
-    str.StringBuilder.append_cstr(sb, c": ")
-    sb_escape(sb, field.ret_type)
-    str.StringBuilder.append_cstr(sb, c"\\n```\\n\\nField")
+    builder.StringBuilder.append(sb, "```spectre\\n")
+    sb_escape_cstr(sb, field.name)
+    builder.StringBuilder.append(sb, ": ")
+    sb_escape_cstr(sb, field.ret_type)
+    builder.StringBuilder.append(sb, "\\n```\\n\\nField")
     if type_sym != none && type_sym.name != none {
-        str.StringBuilder.append_cstr(sb, c" of ")
-        sb_escape(sb, type_sym.name)
+        builder.StringBuilder.append(sb, " of ")
+        sb_escape_cstr(sb, type_sym.name)
     }
-    if field.doc != none && str.len_raw(field.doc) > 0 {
-        str.StringBuilder.append_cstr(sb, c"\\n\\n")
-        sb_escape(sb, field.doc)
+    if field.doc != none && cstr.len(field.doc) > 0 {
+        builder.StringBuilder.append(sb, "\\n\\n")
+        sb_escape_cstr(sb, field.doc)
     }
-    str.StringBuilder.append_cstr(sb, c"\"}}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "\"}}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn handle_hover(
@@ -3487,7 +3465,7 @@ pub fn handle_hover(
     @memcpy(word, @ptradd(content, ws), wl as usize)
     @store8(@ptradd(word, wl), 0)
 
-    if ws > 0 && @load8(@ptradd(content, ws - 1)) == '@' && is_intrinsic_word(word) {
+    if ws > 0 && @load8(@ptradd(content, ws - 1)) == '@' && is_intrinsic_word(str.from_cstr(word)) {
         send_intrinsic_hover(id_raw, word)
         @free(word)
         return
@@ -3531,27 +3509,27 @@ pub fn handle_hover(
             val fields: mut ref void = fields_for_type(doc_store, sym_store, type_sym)
             val field: ref parser.Symbol = find_sym_by_name(fields, word)
             if field != none {
-                val sb: str.StringBuilder = str.StringBuilder.new()
+                val sb: builder.StringBuilder = builder.StringBuilder.new()
                 make_base(sb, id_raw)
-                str.StringBuilder.append_cstr(
+                builder.StringBuilder.append(
                     sb,
-                    c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+                    ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
                 )
-                str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-                sb_escape(sb, field.name)
-                str.StringBuilder.append_cstr(sb, c": ")
-                sb_escape(sb, field.ret_type)
-                str.StringBuilder.append_cstr(sb, c"\\n```\\n\\nField of ")
-                sb_escape(sb, type_sym.name)
-                if field.doc != none && str.len_raw(field.doc) > 0 {
-                    str.StringBuilder.append_cstr(sb, c"\\n\\n")
-                    sb_escape(sb, field.doc)
+                builder.StringBuilder.append(sb, "```spectre\\n")
+                sb_escape_cstr(sb, field.name)
+                builder.StringBuilder.append(sb, ": ")
+                sb_escape_cstr(sb, field.ret_type)
+                builder.StringBuilder.append(sb, "\\n```\\n\\nField of ")
+                sb_escape_cstr(sb, type_sym.name)
+                if field.doc != none && cstr.len(field.doc) > 0 {
+                    builder.StringBuilder.append(sb, "\\n\\n")
+                    sb_escape_cstr(sb, field.doc)
                 }
-                str.StringBuilder.append_cstr(sb, c"\"}}}")
-                val built: str.String = str.StringBuilder.build(sb)
-                write_response(str.cstr(built))
-                str.string_free(built)
-                str.StringBuilder.free(sb)
+                builder.StringBuilder.append(sb, "\"}}}")
+                val built: str.String = builder.StringBuilder.build(sb)
+                write_response(owned_view(built))
+                ostr.free(built)
+                builder.StringBuilder.free(sb)
                 if fields != none {
                     parser.free_sym_list(fields)
                 }
@@ -3574,24 +3552,24 @@ pub fn handle_hover(
             val method: ref parser.Symbol = find_sym_by_name(type_syms, word)
             if method != none && method.kind == parser.SYM_METHOD &&
             method_receiver_matches(method.receiver, type_sym.name) {
-                val sb: str.StringBuilder = str.StringBuilder.new()
+                val sb: builder.StringBuilder = builder.StringBuilder.new()
                 make_base(sb, id_raw)
-                str.StringBuilder.append_cstr(
+                builder.StringBuilder.append(
                     sb,
-                    c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+                    ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
                 )
-                str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-                sb_escape(sb, method.signature)
-                str.StringBuilder.append_cstr(sb, c"\\n```")
-                if method.doc != none && str.len_raw(method.doc) > 0 {
-                    str.StringBuilder.append_cstr(sb, c"\\n\\n")
-                    sb_escape(sb, method.doc)
+                builder.StringBuilder.append(sb, "```spectre\\n")
+                sb_escape_cstr(sb, method.signature)
+                builder.StringBuilder.append(sb, "\\n```")
+                if method.doc != none && cstr.len(method.doc) > 0 {
+                    builder.StringBuilder.append(sb, "\\n\\n")
+                    sb_escape_cstr(sb, method.doc)
                 }
-                str.StringBuilder.append_cstr(sb, c"\"}}}")
-                val built: str.String = str.StringBuilder.build(sb)
-                write_response(str.cstr(built))
-                str.string_free(built)
-                str.StringBuilder.free(sb)
+                builder.StringBuilder.append(sb, "\"}}}")
+                val built: str.String = builder.StringBuilder.build(sb)
+                write_response(owned_view(built))
+                ostr.free(built)
+                builder.StringBuilder.free(sb)
                 if word != none {
                     @free(word)
                 }
@@ -3606,19 +3584,19 @@ pub fn handle_hover(
         }
     }
 
-    if module_alias == none && is_keyword(word) {
-        val sb: str.StringBuilder = str.StringBuilder.new()
+    if module_alias == none && is_keyword(str.from_cstr(word)) {
+        val sb: builder.StringBuilder = builder.StringBuilder.new()
         make_base(sb, id_raw)
-        str.StringBuilder.append_cstr(
+        builder.StringBuilder.append(
             sb,
-            c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+            ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
         )
         append_keyword_hover_contents(sb, word)
-        str.StringBuilder.append_cstr(sb, c"\"}}}")
-        val built: str.String = str.StringBuilder.build(sb)
-        write_response(str.cstr(built))
-        str.string_free(built)
-        str.StringBuilder.free(sb)
+        builder.StringBuilder.append(sb, "\"}}}")
+        val built: str.String = builder.StringBuilder.build(sb)
+        write_response(owned_view(built))
+        ostr.free(built)
+        builder.StringBuilder.free(sb)
         if word != none {
             @free(word)
         }
@@ -3679,20 +3657,20 @@ pub fn handle_hover(
     if module_alias == none {
         val param_decl: ref u8 = lookup_parameter_decl(sym_store, uri, line, word)
         if param_decl != none {
-            val sb: str.StringBuilder = str.StringBuilder.new()
+            val sb: builder.StringBuilder = builder.StringBuilder.new()
             make_base(sb, id_raw)
-            str.StringBuilder.append_cstr(
+            builder.StringBuilder.append(
                 sb,
-                c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+                ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
             )
-            str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-            sb_escape(sb, param_decl)
-            str.StringBuilder.append_cstr(sb, c"\\n```\\n\\nFunction parameter")
-            str.StringBuilder.append_cstr(sb, c"\"}}}")
-            val built: str.String = str.StringBuilder.build(sb)
-            write_response(str.cstr(built))
-            str.string_free(built)
-            str.StringBuilder.free(sb)
+            builder.StringBuilder.append(sb, "```spectre\\n")
+            sb_escape_cstr(sb, param_decl)
+            builder.StringBuilder.append(sb, "\\n```\\n\\nFunction parameter")
+            builder.StringBuilder.append(sb, "\"}}}")
+            val built: str.String = builder.StringBuilder.build(sb)
+            write_response(owned_view(built))
+            ostr.free(built)
+            builder.StringBuilder.free(sb)
             if word != none {
                 @free(word)
             }
@@ -3716,20 +3694,20 @@ pub fn handle_hover(
             @addr(local_line)
         )
         if local_decl != none {
-            val sb: str.StringBuilder = str.StringBuilder.new()
+            val sb: builder.StringBuilder = builder.StringBuilder.new()
             make_base(sb, id_raw)
-            str.StringBuilder.append_cstr(
+            builder.StringBuilder.append(
                 sb,
-                c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+                ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
             )
-            str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-            sb_escape(sb, local_decl)
-            str.StringBuilder.append_cstr(sb, c"\\n```\\n\\nLocal variable")
-            str.StringBuilder.append_cstr(sb, c"\"}}}")
-            val built: str.String = str.StringBuilder.build(sb)
-            write_response(str.cstr(built))
-            str.string_free(built)
-            str.StringBuilder.free(sb)
+            builder.StringBuilder.append(sb, "```spectre\\n")
+            sb_escape_cstr(sb, local_decl)
+            builder.StringBuilder.append(sb, "\\n```\\n\\nLocal variable")
+            builder.StringBuilder.append(sb, "\"}}}")
+            val built: str.String = builder.StringBuilder.build(sb)
+            write_response(owned_view(built))
+            ostr.free(built)
+            builder.StringBuilder.free(sb)
             @free(local_decl)
             if word != none {
                 @free(word)
@@ -3752,20 +3730,20 @@ pub fn handle_hover(
             @addr(global_line)
         )
         if global_decl != none {
-            val sb: str.StringBuilder = str.StringBuilder.new()
+            val sb: builder.StringBuilder = builder.StringBuilder.new()
             make_base(sb, id_raw)
-            str.StringBuilder.append_cstr(
+            builder.StringBuilder.append(
                 sb,
-                c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+                ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
             )
-            str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-            sb_escape(sb, global_decl)
-            str.StringBuilder.append_cstr(sb, c"\\n```\\n\\nGlobal variable")
-            str.StringBuilder.append_cstr(sb, c"\"}}}")
-            val built: str.String = str.StringBuilder.build(sb)
-            write_response(str.cstr(built))
-            str.string_free(built)
-            str.StringBuilder.free(sb)
+            builder.StringBuilder.append(sb, "```spectre\\n")
+            sb_escape_cstr(sb, global_decl)
+            builder.StringBuilder.append(sb, "\\n```\\n\\nGlobal variable")
+            builder.StringBuilder.append(sb, "\"}}}")
+            val built: str.String = builder.StringBuilder.build(sb)
+            write_response(owned_view(built))
+            ostr.free(built)
+            builder.StringBuilder.free(sb)
             @free(global_decl)
             if word != none {
                 @free(word)
@@ -3783,19 +3761,19 @@ pub fn handle_hover(
     val sym: ref parser.Symbol = lookup_symbol(
         doc_store, sym_store, uri, file_path, word, module_alias
     )
-    if sym == none && module_alias == none && is_builtin_type_word(word) {
-        val sb: str.StringBuilder = str.StringBuilder.new()
+    if sym == none && module_alias == none && is_builtin_type_word(str.from_cstr(word)) {
+        val sb: builder.StringBuilder = builder.StringBuilder.new()
         make_base(sb, id_raw)
-        str.StringBuilder.append_cstr(
+        builder.StringBuilder.append(
             sb,
-            c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+            ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
         )
         append_builtin_type_hover_contents(sb, word)
-        str.StringBuilder.append_cstr(sb, c"\"}}}")
-        val built: str.String = str.StringBuilder.build(sb)
-        write_response(str.cstr(built))
-        str.string_free(built)
-        str.StringBuilder.free(sb)
+        builder.StringBuilder.append(sb, "\"}}}")
+        val built: str.String = builder.StringBuilder.build(sb)
+        write_response(owned_view(built))
+        ostr.free(built)
+        builder.StringBuilder.free(sb)
         if file_path != none {
             @free(file_path)
         }
@@ -3823,35 +3801,35 @@ pub fn handle_hover(
         return
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(
+    builder.StringBuilder.append(
         sb,
-        c",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
+        ",\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\""
     )
 
     if sym.kind == parser.SYM_TYPE || sym.kind == parser.SYM_ENUM || sym.kind == parser.SYM_UNION {
         append_type_hover_contents(sb, doc_store, sym_store, uri, file_path, sym)
     } else {
         if sym.signature != none {
-            str.StringBuilder.append_cstr(sb, c"```spectre\\n")
-            sb_escape(sb, sym.signature)
-            str.StringBuilder.append_cstr(sb, c"\\n```")
+            builder.StringBuilder.append(sb, "```spectre\\n")
+            sb_escape_cstr(sb, sym.signature)
+            builder.StringBuilder.append(sb, "\\n```")
         }
         if symbol_is_unverified(doc_store, sym) {
-            str.StringBuilder.append_cstr(sb, c"\\n\\n(unverified)")
+            builder.StringBuilder.append(sb, "\\n\\n(unverified)")
         }
-        if sym.doc != none && str.len_raw(sym.doc) > 0 {
-            str.StringBuilder.append_cstr(sb, c"\\n\\n")
-            sb_escape(sb, sym.doc)
+        if sym.doc != none && cstr.len(sym.doc) > 0 {
+            builder.StringBuilder.append(sb, "\\n\\n")
+            sb_escape_cstr(sb, sym.doc)
         }
     }
 
-    str.StringBuilder.append_cstr(sb, c"\"}}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "\"}}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
     if file_path != none {
         @free(file_path)
     }
@@ -3868,17 +3846,17 @@ fn send_definition_location(
         send_null_result(id_raw)
         return
     }
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":{\"uri\":\"")
-    sb_escape(sb, def_uri)
-    str.StringBuilder.append_cstr(sb, c"\",\"range\":")
+    builder.StringBuilder.append(sb, ",\"result\":{\"uri\":\"")
+    sb_escape_cstr(sb, def_uri)
+    builder.StringBuilder.append(sb, "\",\"range\":")
     append_range(sb, line, col, col + name_len)
-    str.StringBuilder.append_cstr(sb, c"}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn handle_definition(
@@ -4005,7 +3983,7 @@ pub fn handle_definition(
                     def_uri,
                     field.line,
                     field.col,
-                    str.len_raw(field.name)
+                    cstr.len(field.name)
                 )
                 if def_uri != none {
                     @free(def_uri)
@@ -4038,7 +4016,7 @@ pub fn handle_definition(
                     def_uri,
                     method.line,
                     method.col,
-                    str.len_raw(method.name)
+                    cstr.len(method.name)
                 )
                 if def_uri != none {
                     @free(def_uri)
@@ -4082,7 +4060,7 @@ pub fn handle_definition(
                                 def_uri,
                                 field.line,
                                 field.col,
-                                str.len_raw(field.name)
+                                cstr.len(field.name)
                             )
                             if def_uri != none {
                                 @free(def_uri)
@@ -4124,7 +4102,7 @@ pub fn handle_definition(
             if fn_sym != none {
                 val pcol: i64 = find_word_col_in_line(content, fn_sym.line, word)
                 val def_uri: ref u8 = parser.path_to_uri(fn_sym.file)
-                send_definition_location(id_raw, def_uri, fn_sym.line, pcol, str.len_raw(word))
+                send_definition_location(id_raw, def_uri, fn_sym.line, pcol, cstr.len(word))
                 if def_uri != none {
                     @free(def_uri)
                 }
@@ -4154,7 +4132,7 @@ pub fn handle_definition(
         if local_decl != none {
             val lcol: i64 = find_word_col_in_line(content, local_line, word)
             val def_uri: ref u8 = raw_dup_cstr_h(uri)
-            send_definition_location(id_raw, def_uri, local_line, lcol, str.len_raw(word))
+            send_definition_location(id_raw, def_uri, local_line, lcol, cstr.len(word))
             if def_uri != none {
                 @free(def_uri)
             }
@@ -4182,7 +4160,7 @@ pub fn handle_definition(
         if global_decl != none {
             val gcol: i64 = find_word_col_in_line(content, global_line, word)
             val def_uri: ref u8 = raw_dup_cstr_h(uri)
-            send_definition_location(id_raw, def_uri, global_line, gcol, str.len_raw(word))
+            send_definition_location(id_raw, def_uri, global_line, gcol, cstr.len(word))
             if def_uri != none {
                 @free(def_uri)
             }
@@ -4229,7 +4207,7 @@ pub fn handle_definition(
         return
     }
 
-    val name_len: i64 = str.len_raw(sym.name)
+    val name_len: i64 = cstr.len(sym.name)
     send_definition_location(id_raw, def_uri, sym.line, sym.col, name_len)
     @free(def_uri)
 }
@@ -4260,9 +4238,9 @@ pub fn handle_document_symbol(
         sym_list = @bitcast(v, ref void)
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":[")
+    builder.StringBuilder.append(sb, ",\"result\":[")
 
     if sym_list != none {
         val n: usize = coll.PtrList.len(sym_list)
@@ -4276,45 +4254,45 @@ pub fn handle_document_symbol(
                 val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
                 if sym != none && sym.name != none {
                     if first == 0 {
-                        str.StringBuilder.append_cstr(sb, c",")
+                        builder.StringBuilder.append(sb, ",")
                     }
                     first = 0
                     val lsp_kind: i64 = sym_kind_to_lsp(sym.kind)
-                    val nl: i64 = str.len_raw(sym.name)
-                    str.StringBuilder.append_cstr(sb, c"{\"name\":\"")
-                    sb_escape(sb, sym.name)
+                    val nl: i64 = cstr.len(sym.name)
+                    builder.StringBuilder.append(sb, "{\"name\":\"")
+                    sb_escape_cstr(sb, sym.name)
                     if sym.receiver != none {
-                        str.StringBuilder.append_cstr(sb, c" (")
-                        sb_escape(sb, sym.receiver)
-                        str.StringBuilder.append_cstr(sb, c")")
+                        builder.StringBuilder.append(sb, " (")
+                        sb_escape_cstr(sb, sym.receiver)
+                        builder.StringBuilder.append(sb, ")")
                     }
-                    str.StringBuilder.append_cstr(sb, c"\",\"kind\":")
+                    builder.StringBuilder.append(sb, "\",\"kind\":")
                     sb_append_int(sb, lsp_kind)
-                    str.StringBuilder.append_cstr(sb, c",\"range\":")
+                    builder.StringBuilder.append(sb, ",\"range\":")
                     append_range(sb, sym.line, 0, nl + 20)
-                    str.StringBuilder.append_cstr(sb, c",\"selectionRange\":")
+                    builder.StringBuilder.append(sb, ",\"selectionRange\":")
                     append_range(sb, sym.line, sym.col, sym.col + nl)
-                    if sym.doc != none && str.len_raw(sym.doc) > 0 {
+                    if sym.doc != none && cstr.len(sym.doc) > 0 {
                         val dl: ref u8 = first_line_dup(sym.doc)
                         if dl != none {
-                            str.StringBuilder.append_cstr(sb, c",\"detail\":\"")
-                            sb_escape(sb, dl)
-                            str.StringBuilder.append_cstr(sb, c"\"")
+                            builder.StringBuilder.append(sb, ",\"detail\":\"")
+                            sb_escape_cstr(sb, dl)
+                            builder.StringBuilder.append(sb, "\"")
                             @free(dl)
                         }
                     }
-                    str.StringBuilder.append_cstr(sb, c"}")
+                    builder.StringBuilder.append(sb, "}")
                 }
             }
             i++
         }
     }
 
-    str.StringBuilder.append_cstr(sb, c"]}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "]}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 fn find_method_for_type(
@@ -4334,7 +4312,7 @@ fn find_method_for_type(
         if coll.PtrList.get(sym_list, i) is some v {
             val sym: ref parser.Symbol = @bitcast(v, ref void) as ref parser.Symbol
             if sym != none && sym.kind == parser.SYM_METHOD && sym.name != none &&
-            str.raw_cmp(sym.name, name) == 0 &&
+            cstr.cmp(sym.name, name) == 0 &&
             method_receiver_matches(sym.receiver, type_name) {
                 return sym
             }
@@ -4384,11 +4362,11 @@ fn resolve_signature_symbol(
     return find_method_for_type(type_syms, type_sym.name, name)
 }
 
-fn append_signature_params_from_label(sb: str.StringBuilder, label: ref u8) void = trust {
+fn append_signature_params_from_label(sb: builder.StringBuilder, label: ref u8) void = trust {
     if label == none {
         return
     }
-    val len: i64 = str.len_raw(label)
+    val len: i64 = cstr.len(label)
     val open: mut i64 = -1
     val i: mut i64 = 0
     for {
@@ -4459,13 +4437,13 @@ fn append_signature_params_from_label(sb: str.StringBuilder, label: ref u8) void
                 if first == 1 {
                     first = 0
                 } else {
-                    str.StringBuilder.append_cstr(sb, c",")
+                    builder.StringBuilder.append(sb, ",")
                 }
                 val part: ref u8 = raw_dup_h(@ptradd(label, s), plen)
                 if part != none {
-                    str.StringBuilder.append_cstr(sb, c"{\"label\":\"")
-                    sb_escape(sb, part)
-                    str.StringBuilder.append_cstr(sb, c"\"}")
+                    builder.StringBuilder.append(sb, "{\"label\":\"")
+                    sb_escape_cstr(sb, part)
+                    builder.StringBuilder.append(sb, "\"}")
                     @free(part)
                 }
             }
@@ -4480,34 +4458,34 @@ fn append_signature_params_from_label(sb: str.StringBuilder, label: ref u8) void
 }
 
 fn send_intrinsic_signature_help(id_raw: ref void, name: ref u8, active_param: i64) void = trust {
-    val sig: ref u8 = intrinsic_signature(name)
+    val sig: ref u8 = intrinsic_signature(str.from_cstr(name))
     if sig == none {
         send_null_result(id_raw)
         return
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":{\"signatures\":[{\"label\":\"")
-    sb_escape(sb, sig)
-    str.StringBuilder.append_cstr(sb, c"\"")
+    builder.StringBuilder.append(sb, ",\"result\":{\"signatures\":[{\"label\":\"")
+    sb_escape_cstr(sb, sig)
+    builder.StringBuilder.append(sb, "\"")
 
-    val doc: ref u8 = intrinsic_description(name)
-    if doc != none && str.len_raw(doc) > 0 {
-        str.StringBuilder.append_cstr(sb, c",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
-        sb_escape(sb, doc)
-        str.StringBuilder.append_cstr(sb, c"\"}")
+    val doc: ref u8 = intrinsic_description(str.from_cstr(name))
+    if doc != none && cstr.len(doc) > 0 {
+        builder.StringBuilder.append(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
+        sb_escape_cstr(sb, doc)
+        builder.StringBuilder.append(sb, "\"}")
     }
 
-    str.StringBuilder.append_cstr(sb, c",\"parameters\":[")
+    builder.StringBuilder.append(sb, ",\"parameters\":[")
     append_signature_params_from_label(sb, sig)
-    str.StringBuilder.append_cstr(sb, c"]}],\"activeSignature\":0,\"activeParameter\":")
+    builder.StringBuilder.append(sb, "]}],\"activeSignature\":0,\"activeParameter\":")
     sb_append_int(sb, active_param)
-    str.StringBuilder.append_cstr(sb, c"}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn handle_signature_help(
@@ -4566,7 +4544,7 @@ pub fn handle_signature_help(
         return
     }
 
-    if is_intrinsic == 1 && is_intrinsic_word(fn_name) {
+    if is_intrinsic == 1 && is_intrinsic_word(str.from_cstr(fn_name)) {
         send_intrinsic_signature_help(id_raw, fn_name, active_param)
         @free(fn_name)
         if qualifier != none {
@@ -4597,20 +4575,20 @@ pub fn handle_signature_help(
         sig_label = sym.signature
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":{\"signatures\":[{\"label\":\"")
-    sb_escape(sb, sig_label)
-    str.StringBuilder.append_cstr(sb, c"\"")
+    builder.StringBuilder.append(sb, ",\"result\":{\"signatures\":[{\"label\":\"")
+    sb_escape_cstr(sb, sig_label)
+    builder.StringBuilder.append(sb, "\"")
 
-    if sym.doc != none && str.len_raw(sym.doc) > 0 {
-        str.StringBuilder.append_cstr(sb, c",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
-        sb_escape(sb, sym.doc)
-        str.StringBuilder.append_cstr(sb, c"\"}")
+    if sym.doc != none && cstr.len(sym.doc) > 0 {
+        builder.StringBuilder.append(sb, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"")
+        sb_escape_cstr(sb, sym.doc)
+        builder.StringBuilder.append(sb, "\"}")
     }
 
     if sym.params != none && sym.param_count > 0 {
-        str.StringBuilder.append_cstr(sb, c",\"parameters\":[")
+        builder.StringBuilder.append(sb, ",\"parameters\":[")
         val n: usize = coll.PtrList.len(sym.params)
         val i: mut usize = 0
         for {
@@ -4618,31 +4596,31 @@ pub fn handle_signature_help(
                 break
             }
             if i > 0 {
-                str.StringBuilder.append_cstr(sb, c",")
+                builder.StringBuilder.append(sb, ",")
             }
             match coll.PtrList.get(sym.params, i) {
                 some v => {
                     val pstr: ref u8 = @bitcast(v, ref void) as ref u8
-                    str.StringBuilder.append_cstr(sb, c"{\"label\":\"")
-                    sb_escape(sb, pstr)
-                    str.StringBuilder.append_cstr(sb, c"\"}")
+                    builder.StringBuilder.append(sb, "{\"label\":\"")
+                    sb_escape_cstr(sb, pstr)
+                    builder.StringBuilder.append(sb, "\"}")
                 }
                 none => {
-                    str.StringBuilder.append_cstr(sb, c"{\"label\":\"\"}")
+                    builder.StringBuilder.append(sb, "{\"label\":\"\"}")
                 }
             }
             i++
         }
-        str.StringBuilder.append_cstr(sb, c"]")
+        builder.StringBuilder.append(sb, "]")
     }
 
-    str.StringBuilder.append_cstr(sb, c"}],\"activeSignature\":0,\"activeParameter\":")
+    builder.StringBuilder.append(sb, "}],\"activeSignature\":0,\"activeParameter\":")
     sb_append_int(sb, active_param)
-    str.StringBuilder.append_cstr(sb, c"}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 }
 
 pub fn update_document(
@@ -4756,7 +4734,7 @@ pub fn dispatch(
     sym_store: mut ref void,
     msg: ref u8
 ) void = trust {
-    val doc_opt = json.parse(str.view_cstr(msg))
+    val doc_opt = json.parse(str.from_cstr(msg))
     match doc_opt {
         none => {
             return
@@ -4785,25 +4763,31 @@ pub fn dispatch(
                 params = p
             }
 
-            val mlen: i64 = str.len_raw(method)
+            val mlen: i64 = cstr.len(method)
 
-            if mlen == 10 && starts_with_h(method, mlen, "initialize", 10) {
+            if mlen == 10 && starts_with_h(str.view(method, mlen), "initialize") {
                 handle_initialize(id_raw)
-            } elif mlen == 18 && starts_with_h(method, mlen, "textDocument/hover", 18) {
+            } elif mlen == 18 && starts_with_h(str.view(method, mlen), "textDocument/hover") {
                 handle_hover(doc_store, sym_store, id_raw, params)
-            } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/completion", 23) {
+            } elif mlen == 23 && starts_with_h(str.view(method, mlen), "textDocument/completion") {
                 handle_completion(doc_store, sym_store, id_raw, params)
-            } elif mlen == 23 && starts_with_h(method, mlen, "textDocument/definition", 23) {
+            } elif mlen == 23 && starts_with_h(str.view(method, mlen), "textDocument/definition") {
                 handle_definition(doc_store, sym_store, id_raw, params)
-            } elif mlen == 27 && starts_with_h(method, mlen, "textDocument/documentSymbol", 27) {
+            } elif mlen == 27 && starts_with_h(
+                str.view(method, mlen),
+                "textDocument/documentSymbol"
+            ) {
                 handle_document_symbol(doc_store, sym_store, id_raw, params)
-            } elif mlen == 26 && starts_with_h(method, mlen, "textDocument/signatureHelp", 26) {
+            } elif mlen == 26 && starts_with_h(
+                str.view(method, mlen),
+                "textDocument/signatureHelp"
+            ) {
                 handle_signature_help(doc_store, sym_store, id_raw, params)
-            } elif mlen == 20 && starts_with_h(method, mlen, "textDocument/didOpen", 20) {
+            } elif mlen == 20 && starts_with_h(str.view(method, mlen), "textDocument/didOpen") {
                 handle_did_open(doc_store, sym_store, params)
-            } elif mlen == 22 && starts_with_h(method, mlen, "textDocument/didChange", 22) {
+            } elif mlen == 22 && starts_with_h(str.view(method, mlen), "textDocument/didChange") {
                 handle_did_change(doc_store, sym_store, params)
-            } elif mlen == 8 && starts_with_h(method, mlen, "shutdown", 8) {
+            } elif mlen == 8 && starts_with_h(str.view(method, mlen), "shutdown") {
                 send_null_result(id_raw)
             }
 
@@ -4816,7 +4800,7 @@ fn base_names_type(base: ref u8, type_name: ref u8) bool = trust {
     if base == none || type_name == none {
         return false
     }
-    val blen: i64 = str.len_raw(base)
+    val blen: i64 = cstr.len(base)
     val last_dot: mut i64 = -1
     val i: mut i64 = 0
     for {
@@ -4830,12 +4814,12 @@ fn base_names_type(base: ref u8, type_name: ref u8) bool = trust {
     }
     val start: i64 = last_dot + 1
     val seg_len: i64 = blen - start
-    return seg_len == str.len_raw(type_name) &&
+    return seg_len == cstr.len(type_name) &&
     strncmp(@ptradd(base, start), type_name, seg_len as usize) == 0
 }
 
 fn append_keyword_completions(
-    sb: str.StringBuilder,
+    sb: builder.StringBuilder,
     first: ref i64,
     prefix: ref u8,
     replace_line: i64,
@@ -4851,9 +4835,9 @@ fn append_keyword_completions(
         if kw == none {
             break
         }
-        if prefix_matches_h(kw, prefix) {
+        if prefix_matches_h(str.from_cstr(kw), str.from_cstr(prefix)) {
             append_completion_item(
-                sb, first, kw, keyword_signature(kw), keyword_description(kw),
+                sb, first, kw, keyword_signature(str.from_cstr(kw)), keyword_description(str.from_cstr(kw)),
                 14, replace_line, replace_start, replace_end
             )
         }
@@ -4924,14 +4908,14 @@ pub fn handle_completion(
         base = raw_dup_h(@ptradd(content, base_start), base_len)
     }
 
-    val sb: str.StringBuilder = str.StringBuilder.new()
+    val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
-    str.StringBuilder.append_cstr(sb, c",\"result\":{\"isIncomplete\":false,\"items\":[")
+    builder.StringBuilder.append(sb, ",\"result\":{\"isIncomplete\":false,\"items\":[")
     val first: mut i64 = 1
 
     if has_dot == 1 && base != none {
         val handled: mut bool = false
-        val base_has_dot: bool = contains_substr_h(base, c".")
+        val base_has_dot: bool = contains_substr_h(str.from_cstr(base), ".")
 
         if !base_has_dot {
             val mod_syms: ref void = module_syms_for_alias(
@@ -5019,11 +5003,11 @@ pub fn handle_completion(
         append_keyword_completions(sb, @addr(first), prefix, line, replace_start, replace_end)
     }
 
-    str.StringBuilder.append_cstr(sb, c"]}}")
-    val built: str.String = str.StringBuilder.build(sb)
-    write_response(str.cstr(built))
-    str.string_free(built)
-    str.StringBuilder.free(sb)
+    builder.StringBuilder.append(sb, "]}}")
+    val built: str.String = builder.StringBuilder.build(sb)
+    write_response(owned_view(built))
+    ostr.free(built)
+    builder.StringBuilder.free(sb)
 
     if prefix != none {
         @free(prefix)

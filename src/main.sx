@@ -1,25 +1,25 @@
 val coll       = use("std/collections")
 val stdio      = use("std/stdio")
 val str        = use("std/string")
+val cstr       = use("std/string/cstr")
 val allocators = use("std/allocators")
 val handlers   = use("./handlers")
 val parser     = use("./parser")
 val json       = use("std/json")
 
 extern (C) fn fread(buf: ref void, size: usize, count: usize, stream: ref void) usize = "fread"
-extern (C) fn strncmp(a: ref u8, b: ref u8, n: usize) i32 = "strncmp"
 
 val g_doc_store: mut ref void = none
 val g_sym_store: mut ref void = none
 
-fn atoi_raw(s: ref u8) i64 = trust {
+fn atoi_raw(s: str.StringView) i64 = trust {
     val v: mut i64 = 0
     val i: mut i64 = 0
     for {
-        if s == none {
+        if i >= s.len {
             break
         }
-        val c: u8 = @load8(@ptradd(s, i))
+        val c: u8 = @load8(@ptradd(s.ptr, i))
         if c < '0' || c > '9' {
             break
         }
@@ -29,18 +29,8 @@ fn atoi_raw(s: ref u8) i64 = trust {
     return v
 }
 
-fn starts_with_main(s: ref u8, slen: i64, prefix: str.StringView, plen: i64) bool = trust {
-    if plen > slen || plen <= 0 {
-        return false
-    }
-    return strncmp(s, prefix.ptr, plen as usize) == 0
-}
-
-fn is_help_flag(arg: ref u8) bool = {
-    if arg == none {
-        return false
-    }
-    return str.raw_cmp(arg, c"-h") == 0 || str.raw_cmp(arg, c"-help") == 0
+fn is_help_flag(arg: str.StringView) bool = {
+    return trust (str.eql(arg, "-h") || str.eql(arg, "-help") || str.eql(arg, "--help"))
 }
 
 fn print_help() void = {
@@ -69,20 +59,15 @@ fn read_message() option[ref u8] = trust {
             @free(line_buf)
             return none
         }
-        val llen: i64 = str.len_raw(line_buf)
-        if llen == 0 {
+        val line: str.StringView = str.from_cstr(line_buf)
+        if str.is_empty(line) {
             break
         }
-        if llen == 1 && @load8(line_buf) == '\n' {
+        if str.eql(line, "\n") || str.eql(line, "\r\n") {
             break
         }
-        if llen == 2 &&
-        @load8(line_buf) == '\r' &&
-        @load8(@ptradd(line_buf, 1) as ref void) == '\n' {
-            break
-        }
-        if starts_with_main(line_buf, llen, "Content-Length: ", 16) {
-            content_length = atoi_raw(@ptradd(line_buf, 16))
+        if str.starts_with(line, "Content-Length: ") {
+            content_length = atoi_raw(str.slice(line, 16, line.len))
         }
     }
 
@@ -129,7 +114,7 @@ fn read_message() option[ref u8] = trust {
 pub fn main() void = trust {
     val args = @args()
     for arg in args {
-        if is_help_flag(arg) {
+        if is_help_flag(str.from_cstr(arg)) {
             print_help()
             return
         }
@@ -219,8 +204,8 @@ test {
     match coll.PtrList.get(fields, 0 as usize) {
         some v => {
             val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
-            assert str.raw_cmp(f.name, c"x") == 0
-            assert str.raw_cmp(f.ret_type, c"i32") == 0
+            assert cstr.cmp(f.name, c"x") == 0
+            assert cstr.cmp(f.ret_type, c"i32") == 0
             assert f.line == 2
             assert f.col == 4
             assert f.doc != none
@@ -233,8 +218,8 @@ test {
     match coll.PtrList.get(fields, 1 as usize) {
         some v => {
             val f: ref parser.Symbol = trust @bitcast(v, ref void) as ref parser.Symbol
-            assert str.raw_cmp(f.name, c"y") == 0
-            assert str.raw_cmp(f.ret_type, c"mut f64") == 0
+            assert cstr.cmp(f.name, c"y") == 0
+            assert cstr.cmp(f.ret_type, c"mut f64") == 0
         }
         none => {
             assert false
@@ -244,56 +229,60 @@ test {
 }
 
 test "keyword detection" {
-    assert handlers.is_keyword(c"for")
-    assert handlers.is_keyword(c"fn")
-    assert handlers.is_keyword(c"type")
-    assert !handlers.is_keyword(c"x_instance")
-    assert handlers.keyword_description(c"for") != none
-    assert handlers.keyword_signature(c"fn") != none
+    assert trust handlers.is_keyword("for")
+    assert trust handlers.is_keyword("fn")
+    assert trust handlers.is_keyword("type")
+    assert !trust handlers.is_keyword("x_instance")
+    assert trust handlers.keyword_description("for") != none
+    assert trust handlers.keyword_signature("fn") != none
 }
 
 test "intrinsic detection" {
-    val names: list[ref u8] = [
+    val sa: allocators.ScopedArenaAllocator = trust allocators.ScopedArena.new(65536 as usize)?
+    val la: allocators.ListArena = {arena: sa}
+    val names: list[str.StringView] = @list(
+        la,
         "fmtalloc", "len", "addr", "deref", "alloc", "free", "memcpy", "memset",
         "memmove", "puts", "print", "zeroed", "args", "bitcast", "load",
         "load8", "call", "snprintf", "dprintf", "reserve", "get", "insert",
         "capacity", "ptradd", "store", "store8", "staticerror", "flush",
         "stdin", "stdout", "fgets", "atoi", "itoa"
-    ]
+    )?
     for name in names {
-        assert handlers.is_intrinsic_word(name)
-        assert handlers.intrinsic_signature(name) != none
-        assert handlers.intrinsic_description(name) != none
+        assert trust handlers.is_intrinsic_word(name)
+        assert trust handlers.intrinsic_signature(name) != none
+        assert trust handlers.intrinsic_description(name) != none
     }
-    assert !handlers.is_intrinsic_word(c"not_an_intrinsic")
+    assert !trust handlers.is_intrinsic_word("not_an_intrinsic")
+    trust allocators.ScopedArena.free(sa)
 }
 
 test {
     val decl: ref u8 = c"val x_instance: mut X = @zeroed"
     val ty: ref u8 = trust handlers.decl_explicit_type(decl)
     assert ty != none
-    assert str.raw_cmp(ty, c"mut X") == 0
+    assert cstr.cmp(ty, c"mut X") == 0
     trust @free(ty)
 
     val param: ref u8 = trust handlers.extract_param_type(c"value: ref u8")
     assert param != none
-    assert str.raw_cmp(param, c"ref u8") == 0
+    assert cstr.cmp(param, c"ref u8") == 0
     trust @free(param)
 
     val inferred_decl: ref u8 = c"val p = X.new()"
     val init: ref u8 = trust handlers.decl_initializer(inferred_decl)
     assert init != none
-    assert str.raw_cmp(init, c"X.new()") == 0
+    assert cstr.cmp(init, c"X.new()") == 0
 
     val inferred: ref u8 = trust handlers.infer_expr_type_name(init)
     assert inferred != none
-    assert str.raw_cmp(inferred, c"X.new") == 0
+    assert cstr.cmp(inferred, c"X.new") == 0
     trust @free(init)
     trust @free(inferred)
 
     val wrapped: ref u8 = trust handlers.infer_expr_type_name(c"some mod.Type.new(1, 2)")
     assert wrapped != none
-    assert str.raw_cmp(wrapped, c"mod.Type.new") == 0
+    assert cstr.cmp(wrapped, c"mod.Type.new") == 0
     trust @free(wrapped)
 }
 
@@ -347,8 +336,8 @@ test {
 }
 
 test {
-    assert is_help_flag(c"-h")
-    assert is_help_flag(c"--help")
-    assert !is_help_flag(c"--version")
-    assert !is_help_flag(c"")
+    assert is_help_flag("-h")
+    assert is_help_flag("--help")
+    assert !is_help_flag("--version")
+    assert !is_help_flag("")
 }
