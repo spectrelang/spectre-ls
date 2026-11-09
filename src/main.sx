@@ -40,7 +40,7 @@ fn is_help_flag(arg: ref u8) bool = {
     if arg == none {
         return false
     }
-    return str.raw_cmp(arg, c"-h") == 0 || str.raw_cmp(arg, c"--help") == 0
+    return str.raw_cmp(arg, c"-h") == 0 || str.raw_cmp(arg, c"-help") == 0
 }
 
 fn print_help() void = {
@@ -50,7 +50,7 @@ fn print_help() void = {
     stdio.puts("  spectre-ls [options]")
     stdio.puts("")
     stdio.puts("Options:")
-    stdio.puts("  -h, --help    Show this help message and exit")
+    stdio.puts("  -h, -help    Show this help message and exit")
     stdio.puts("")
     stdio.puts("Without options, spectre-ls communicates over stdio using the")
     stdio.puts("Language Server Protocol.")
