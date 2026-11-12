@@ -26,6 +26,57 @@ fn owned_view(s: str.String) str.StringView = trust {
     return str.view(ostr.as_cstr(s), ostr.len(s))
 }
 
+val g_json_arena: mut allocators.ScopedArenaAllocator = none
+
+fn json_arena_ensure() void = trust {
+    if g_json_arena == none {
+        match allocators.ScopedArena.new(8192 as usize) {
+            ok arena => {
+                g_json_arena = arena
+            }
+            err _ => {
+            }
+        }
+    }
+}
+
+fn json_arena_reset() void = trust {
+    json_arena_ensure()
+    if g_json_arena != none {
+        allocators.ScopedArena.reset(g_json_arena)
+    }
+}
+
+fn jv_none() json.JsonValue = {
+    return json.JsonValue{node: none, owner: none}
+}
+
+fn jv_is_none(v: json.JsonValue) bool = {
+    return v.node == none
+}
+
+fn json_copy_view(v: str.StringView) ref u8 = trust {
+    if v.ptr == none {
+        return none
+    }
+    json_arena_ensure()
+    if g_json_arena == none {
+        return none
+    }
+    val out: ref u8 = allocators.ScopedArena.alloc_or_none(
+        g_json_arena,
+        (v.len + 1) as usize
+    ) as ref u8
+    if out == none {
+        return none
+    }
+    if v.len > 0 {
+        @memcpy(out as ref void, v.ptr as ref void, v.len as usize)
+    }
+    @store8(@ptradd(out, v.len), 0)
+    return out
+}
+
 fn raw_dup_h(s: ref u8, len: i64) ref u8 = trust {
     if s == none || len <= 0 {
         return none
@@ -168,25 +219,26 @@ fn sb_escape_cstr(sb: builder.StringBuilder, s: ref u8) void = trust {
     sb_escape(sb, str.from_cstr(s))
 }
 
-fn make_base(sb: builder.StringBuilder, id_raw: ref void) void = trust {
+fn make_base(sb: builder.StringBuilder, id_raw: json.JsonValue) void = trust {
     builder.StringBuilder.append(sb, "{\"jsonrpc\":\"2.0\",\"id\":")
-    if id_raw == none {
+    if jv_is_none(id_raw) || json.is_null(id_raw) {
         builder.StringBuilder.append(sb, "null")
         return
     }
-    val ik: json.JsonKind = json.val_kind(id_raw)
+    val ik: json.JsonKind = json.kind(id_raw)
     if ik == json.JsonKind.Int || ik == json.JsonKind.UInt {
-        val n: i64 = json.val_get_int(id_raw)
-        sb_append_int(sb, n)
+        sb_append_int(sb, json.as_int(id_raw))
+    } elif json.is_string(id_raw) {
+        val value: str.StringView = json.as_string(id_raw)
+        builder.StringBuilder.append(sb, "\"")
+        sb_escape(sb, value)
+        builder.StringBuilder.append(sb, "\"")
     } else {
-        val s: ref u8 = json.val_get_str(id_raw)
-        builder.StringBuilder.append(sb, "\"")
-        sb_escape_cstr(sb, s)
-        builder.StringBuilder.append(sb, "\"")
+        builder.StringBuilder.append(sb, "null")
     }
 }
 
-pub fn send_null_result(id_raw: ref void) void = trust {
+pub fn send_null_result(id_raw: json.JsonValue) void = trust {
     val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
     builder.StringBuilder.append(sb, ",\"result\":null}")
@@ -196,7 +248,7 @@ pub fn send_null_result(id_raw: ref void) void = trust {
     builder.StringBuilder.free(sb)
 }
 
-pub fn send_error(id_raw: ref void, code: i64, msg: ref u8) void = trust {
+pub fn send_error(id_raw: json.JsonValue, code: i64, msg: ref u8) void = trust {
     val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
     builder.StringBuilder.append(sb, ",\"error\":{\"code\":")
@@ -440,7 +492,7 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
     builder.StringBuilder.free(sb)
 }
 
-pub fn handle_initialize(id_raw: ref void) void = trust {
+pub fn handle_initialize(id_raw: json.JsonValue) void = trust {
     val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
     builder.StringBuilder.append(sb, ",\"result\":{\"capabilities\":{")
@@ -471,10 +523,10 @@ pub fn handle_initialize(id_raw: ref void) void = trust {
     builder.StringBuilder.free(sb)
 }
 
-fn get_str_field(obj: ref void, key: str.StringView) ref u8 = trust {
-    match json.obj_get_str(obj, key.ptr) {
-        some s => {
-            return s
+fn get_str_field(obj: json.JsonValue, key: str.StringView) ref u8 = trust {
+    match json.object_get_str(obj, key) {
+        some value => {
+            return json_copy_view(value)
         }
         none => {
             return none
@@ -482,10 +534,10 @@ fn get_str_field(obj: ref void, key: str.StringView) ref u8 = trust {
     }
 }
 
-fn get_int_field(obj: ref void, key: str.StringView) i64 = trust {
-    match json.obj_get_int(obj, key.ptr) {
-        some n => {
-            return n
+fn get_int_field(obj: json.JsonValue, key: str.StringView) i64 = trust {
+    match json.object_get_int(obj, key) {
+        some value => {
+            return value
         }
         none => {
             return 0
@@ -493,16 +545,16 @@ fn get_int_field(obj: ref void, key: str.StringView) i64 = trust {
     }
 }
 
-fn get_obj_field(obj: ref void, key: str.StringView) ref void = trust {
-    match json.obj_get(obj, key.ptr) {
-        some v => {
-            if json.val_is_object(v) {
-                return v
+fn get_obj_field(obj: json.JsonValue, key: str.StringView) json.JsonValue = trust {
+    match json.object_get(obj, key) {
+        some value => {
+            if json.is_object(value) {
+                return value
             }
-            return none
+            return jv_none()
         }
         none => {
-            return none
+            return jv_none()
         }
     }
 }
@@ -3546,7 +3598,7 @@ fn resolve_chain_type_symbol(
     return current
 }
 
-fn send_intrinsic_hover(id_raw: ref void, word: ref u8) void = trust {
+fn send_intrinsic_hover(id_raw: json.JsonValue, word: ref u8) void = trust {
     val sb: builder.StringBuilder = builder.StringBuilder.new()
     make_base(sb, id_raw)
     builder.StringBuilder.append(
@@ -3562,7 +3614,7 @@ fn send_intrinsic_hover(id_raw: ref void, word: ref u8) void = trust {
 }
 
 fn send_field_hover(
-    id_raw: ref void,
+    id_raw: json.JsonValue,
     field: ref lsp_parser.Symbol,
     type_sym: ref lsp_parser.Symbol
 ) void = trust {
@@ -3599,16 +3651,16 @@ fn send_field_hover(
 pub fn handle_hover(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    id_raw: ref void,
-    params: ref void
+    id_raw: json.JsonValue,
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         send_null_result(id_raw)
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    val pos_obj: json.JsonValue = get_obj_field(params, "position")
+    if jv_is_none(td_obj) || jv_is_none(pos_obj) {
         send_null_result(id_raw)
         return
     }
@@ -4021,7 +4073,7 @@ pub fn handle_hover(
 }
 
 fn send_definition_location(
-    id_raw: ref void,
+    id_raw: json.JsonValue,
     def_uri: ref u8,
     line: i64,
     col: i64,
@@ -4047,16 +4099,16 @@ fn send_definition_location(
 pub fn handle_definition(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    id_raw: ref void,
-    params: ref void
+    id_raw: json.JsonValue,
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         send_null_result(id_raw)
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    val pos_obj: json.JsonValue = get_obj_field(params, "position")
+    if jv_is_none(td_obj) || jv_is_none(pos_obj) {
         send_null_result(id_raw)
         return
     }
@@ -4400,15 +4452,15 @@ pub fn handle_definition(
 pub fn handle_document_symbol(
     _: ref void,
     sym_store: ref void,
-    id_raw: ref void,
-    params: ref void
+    id_raw: json.JsonValue,
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         send_null_result(id_raw)
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    if jv_is_none(td_obj) {
         send_null_result(id_raw)
         return
     }
@@ -4642,7 +4694,7 @@ fn append_signature_params_from_label(sb: builder.StringBuilder, label: ref u8) 
     }
 }
 
-fn send_intrinsic_signature_help(id_raw: ref void, name: ref u8, active_param: i64) void = trust {
+fn send_intrinsic_signature_help(id_raw: json.JsonValue, name: ref u8, active_param: i64) void = trust {
     val sig: ref u8 = intrinsic_signature(str.from_cstr(name))
     if sig == none {
         send_null_result(id_raw)
@@ -4676,16 +4728,16 @@ fn send_intrinsic_signature_help(id_raw: ref void, name: ref u8, active_param: i
 pub fn handle_signature_help(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    id_raw: ref void,
-    params: ref void
+    id_raw: json.JsonValue,
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         send_null_result(id_raw)
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    val pos_obj: json.JsonValue = get_obj_field(params, "position")
+    if jv_is_none(td_obj) || jv_is_none(pos_obj) {
         send_null_result(id_raw)
         return
     }
@@ -4913,13 +4965,13 @@ pub fn update_document(
 pub fn handle_did_open(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    params: ref void
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    if jv_is_none(td_obj) {
         return
     }
     val uri: ref u8 = get_str_field(td_obj, "uri")
@@ -4930,12 +4982,12 @@ pub fn handle_did_open(
     update_document(doc_store, sym_store, uri, text, true)
 }
 
-pub fn handle_did_save(doc_store: ref void, params: ref void) void = trust {
-    if params == none {
+pub fn handle_did_save(doc_store: ref void, params: json.JsonValue) void = trust {
+    if jv_is_none(params) {
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    if jv_is_none(td_obj) {
         return
     }
     val uri: ref u8 = get_str_field(td_obj, "uri")
@@ -4955,13 +5007,13 @@ pub fn handle_did_save(doc_store: ref void, params: ref void) void = trust {
 pub fn handle_did_change(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    params: ref void
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    if td_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    if jv_is_none(td_obj) {
         return
     }
     val uri: ref u8 = get_str_field(td_obj, "uri")
@@ -4969,21 +5021,21 @@ pub fn handle_did_change(
         return
     }
 
-    val changes: mut ref void = none
-    if json.obj_get(params, c"contentChanges") is some v {
-        if json.val_is_array(v) {
-            changes = v
+    val changes: mut json.JsonValue = jv_none()
+    if json.object_get(params, "contentChanges") is some value {
+        if json.is_array(value) {
+            changes = value
         }
     }
-    if changes == none {
+    if jv_is_none(changes) {
         return
     }
 
-    val last_idx: usize = json.arr_len(changes)
+    val last_idx: i64 = json.len(changes)
     if last_idx == 0 {
         return
     }
-    if json.arr_get(changes, last_idx - 1) is some ch {
+    if json.array_get(changes, last_idx - 1) is some ch {
         val text: ref u8 = get_str_field(ch, "text")
         if text != none {
             update_document(doc_store, sym_store, uri, text, false)
@@ -4996,33 +5048,28 @@ pub fn dispatch(
     sym_store: mut ref void,
     msg: ref u8
 ) void = trust {
-    val doc_opt = json.parse(str.from_cstr(msg))
-    match doc_opt {
-        none => {
+    json_arena_reset()
+    val doc_res = json.parse(str.from_cstr(msg))
+    match doc_res {
+        err _ => {
             return
         }
-        some doc => {
-            val root: ref void = json.doc_root(doc)
-
-            val method: mut ref u8 = none
-            match json.obj_get_str(root, c"method") {
-                some m => {
-                    method = m
-                }
-                none => {
-                    json.doc_free(doc)
-                    return
-                }
+        ok doc => {
+            val root: json.JsonValue = json.root(doc)
+            val method: ref u8 = get_str_field(root, "method")
+            if method == none {
+                json.doc_free(doc)
+                return
             }
 
-            val id_raw: mut ref void = none
-            if json.obj_get(root, c"id") is some v {
-                id_raw = v
+            val id_raw: mut json.JsonValue = jv_none()
+            if json.object_get(root, "id") is some value {
+                id_raw = value
             }
 
-            val params: mut ref void = none
-            if json.obj_get(root, c"params") is some p {
-                params = p
+            val params: mut json.JsonValue = jv_none()
+            if json.object_get(root, "params") is some value {
+                params = value
             }
 
             val mlen: i64 = cstr.len(method)
@@ -5112,16 +5159,16 @@ fn append_keyword_completions(
 pub fn handle_completion(
     doc_store: mut ref void,
     sym_store: mut ref void,
-    id_raw: ref void,
-    params: ref void
+    id_raw: json.JsonValue,
+    params: json.JsonValue
 ) void = trust {
-    if params == none {
+    if jv_is_none(params) {
         send_null_result(id_raw)
         return
     }
-    val td_obj: ref void = get_obj_field(params, "textDocument")
-    val pos_obj: ref void = get_obj_field(params, "position")
-    if td_obj == none || pos_obj == none {
+    val td_obj: json.JsonValue = get_obj_field(params, "textDocument")
+    val pos_obj: json.JsonValue = get_obj_field(params, "position")
+    if jv_is_none(td_obj) || jv_is_none(pos_obj) {
         send_null_result(id_raw)
         return
     }

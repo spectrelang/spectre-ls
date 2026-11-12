@@ -386,10 +386,10 @@ test {
 test {
     val doc = trust json.parse("{\"jsonrpc\":\"2.0\"}")
     match doc {
-        some d => {
+        ok d => {
             trust json.doc_free(d)
         }
-        none => {
+        err _ => {
             assert false
         }
     }
