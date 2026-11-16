@@ -637,6 +637,8 @@ fn process_line(
     }
 
     if is_blank_line(line, line_len) {
+        ostr.clear(doc_buf)
+        @store(has_doc, 0 as i64)
         return
     }
 
@@ -1302,6 +1304,8 @@ pub fn parse_type_fields(content: ref u8, file: ref u8, type_line: i64) ref void
                 }
             }
         } elif tlen > 0 && !is_doc {
+            ostr.clear(doc_buf)
+        } elif tlen == 0 && depth == 1 {
             ostr.clear(doc_buf)
         }
 
