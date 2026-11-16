@@ -413,7 +413,118 @@ fn append_compiler_diagnostics(
     }
 }
 
-fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
+fn is_function_symbol(sym: ref lsp_parser.Symbol) bool = {
+    if sym == none {
+        return false
+    }
+    return sym.kind == lsp_parser.SYM_FUNCTION || sym.kind == lsp_parser.SYM_METHOD
+}
+
+/// Extern declarations are commonly repeated in mutually exclusive `when`
+/// branches, which is valid. Only report actual definitions.
+fn symbol_is_extern(sym: ref lsp_parser.Symbol) bool = trust {
+    if sym == none || sym.signature == none {
+        return false
+    }
+    return str.contains(str.from_cstr(sym.signature), "extern ")
+}
+
+/// A type-namespaced method and a plain function may share a name, so the
+/// receiver forms part of the function's identity.
+fn same_function_namespace(
+    a: ref lsp_parser.Symbol,
+    b: ref lsp_parser.Symbol
+) bool = trust {
+    if a == none || b == none || a.name == none || b.name == none {
+        return false
+    }
+    if cstr.cmp(a.name, b.name) != 0 {
+        return false
+    }
+    val a_rlen: mut i64 = 0
+    if a.receiver != none {
+        a_rlen = cstr.len(a.receiver)
+    }
+    val b_rlen: mut i64 = 0
+    if b.receiver != none {
+        b_rlen = cstr.len(b.receiver)
+    }
+    if a_rlen == 0 || b_rlen == 0 {
+        return a_rlen == b_rlen
+    }
+    return cstr.cmp(a.receiver, b.receiver) == 0
+}
+
+fn append_duplicate_function_diagnostics(
+    sb: builder.StringBuilder,
+    first: ref i64,
+    syms: ref void
+) void = trust {
+    if syms == none {
+        return
+    }
+    val n: usize = coll.PtrList.len(syms)
+    val i: mut usize = 0
+    for {
+        if i >= n {
+            break
+        }
+        val cur: mut ref lsp_parser.Symbol = none
+        if coll.PtrList.get(syms, i) is some v {
+            cur = @bitcast(v, ref void) as ref lsp_parser.Symbol
+        }
+        if is_function_symbol(cur) && !symbol_is_extern(cur) && cur.name != none {
+            val prev: mut ref lsp_parser.Symbol = none
+            val j: mut usize = 0
+            for {
+                if j >= i {
+                    break
+                }
+                val cand: mut ref lsp_parser.Symbol = none
+                if coll.PtrList.get(syms, j) is some v {
+                    cand = @bitcast(v, ref void) as ref lsp_parser.Symbol
+                }
+                if is_function_symbol(cand) && !symbol_is_extern(cand) &&
+                same_function_namespace(cand, cur) {
+                    prev = cand
+                    break
+                }
+                j++
+            }
+
+            if prev != none {
+                val name_len: i64 = cstr.len(cur.name)
+                val msg: mut ref u8 = none
+                if cur.kind == lsp_parser.SYM_METHOD && cur.receiver != none {
+                    msg = @fmtalloc(
+                        "duplicate definition of '{s}.{s}' (first defined at line {lld})",
+                        {cur.receiver, cur.name, prev.line + 1}
+                    )
+                } else {
+                    msg = @fmtalloc(
+                        "duplicate definition of '{s}' (first defined at line {lld})",
+                        {cur.name, prev.line + 1}
+                    )
+                }
+                if msg != none {
+                    emit_diag_comma(sb, first)
+                    builder.StringBuilder.append(sb, "{\"range\":")
+                    append_range(sb, cur.line, cur.col, cur.col + name_len)
+                    builder.StringBuilder.append(
+                        sb,
+                        ",\"severity\":1,\"source\":\"spectre-ls\",\"code\":\"duplicate-definition\",\"message\":\""
+                    )
+                    sb_escape_cstr(sb, msg)
+                    builder.StringBuilder.append(sb, "\"}")
+                    @free(msg)
+                }
+            }
+        }
+        i++
+    }
+}
+
+fn send_diagnostics(uri: ref u8, content: ref u8, sym_store: ref void) void = trust {
     if uri == none || content == none {
         return
     }
@@ -458,6 +569,14 @@ fn send_diagnostics(uri: ref u8, content: ref u8) void = trust {
         }
         lsp_parser.free_unused_variables(vars)
     }
+
+    val cur_syms: mut ref void = none
+    if sym_store != none {
+        if coll.StringMap.get(sym_store, uri) is some v {
+            cur_syms = @bitcast(v, ref void)
+        }
+    }
+    append_duplicate_function_diagnostics(sb, @addr(first), cur_syms)
 
     val file_path: ref u8 = lsp_parser.uri_to_path(uri)
     if file_path != none {
@@ -4889,7 +5008,7 @@ pub fn pending_due_ns() i64 = trust {
     return g_pending_due
 }
 
-pub fn run_pending_check(doc_store: ref void) void = trust {
+pub fn run_pending_check(doc_store: ref void, sym_store: ref void) void = trust {
     if g_pending_uri == none {
         g_pending_due = 0
         return
@@ -4900,7 +5019,7 @@ pub fn run_pending_check(doc_store: ref void) void = trust {
         content = @bitcast(v, ref void) as ref u8
     }
     if content != none {
-        send_diagnostics(uri, content)
+        send_diagnostics(uri, content, sym_store)
     }
     clear_pending()
 }
@@ -4952,11 +5071,11 @@ pub fn update_document(
 
     if run_now {
         clear_pending()
-        send_diagnostics(uri, text_copy)
+        send_diagnostics(uri, text_copy, sym_store)
     } else {
         // Don't lose a pending check when the user switches files.
         if g_pending_uri != none && cstr.cmp(g_pending_uri, uri) != 0 {
-            run_pending_check(doc_store)
+            run_pending_check(doc_store, sym_store)
         }
         set_pending(uri)
     }
@@ -4982,7 +5101,11 @@ pub fn handle_did_open(
     update_document(doc_store, sym_store, uri, text, true)
 }
 
-pub fn handle_did_save(doc_store: ref void, params: json.JsonValue) void = trust {
+pub fn handle_did_save(
+    doc_store: ref void,
+    sym_store: ref void,
+    params: json.JsonValue
+) void = trust {
     if jv_is_none(params) {
         return
     }
@@ -5000,7 +5123,7 @@ pub fn handle_did_save(doc_store: ref void, params: json.JsonValue) void = trust
     }
     if content != none {
         clear_pending()
-        send_diagnostics(uri, content)
+        send_diagnostics(uri, content, sym_store)
     }
 }
 
@@ -5097,7 +5220,7 @@ pub fn dispatch(
             } elif mlen == 22 && starts_with_h(str.view(method, mlen), "textDocument/didChange") {
                 handle_did_change(doc_store, sym_store, params)
             } elif mlen == 20 && starts_with_h(str.view(method, mlen), "textDocument/didSave") {
-                handle_did_save(doc_store, params)
+                handle_did_save(doc_store, sym_store, params)
             } elif mlen == 8 && starts_with_h(str.view(method, mlen), "shutdown") {
                 send_null_result(id_raw)
             }
@@ -5249,15 +5372,20 @@ pub fn handle_completion(
                             v,
                             ref void
                         ) as ref lsp_parser.Symbol
-                        append_symbol_completion(
-                            sb,
-                            @addr(first),
-                            sym,
-                            prefix,
-                            line,
-                            replace_start,
-                            replace_end
-                        )
+                        // Import aliases are not re-exported by a module, so
+                        // suggesting them after `alias.` would insert code that
+                        // cannot compile.
+                        if sym == none || sym.kind != lsp_parser.SYM_MODULE {
+                            append_symbol_completion(
+                                sb,
+                                @addr(first),
+                                sym,
+                                prefix,
+                                line,
+                                replace_start,
+                                replace_end
+                            )
+                        }
                     }
                     mi++
                 }

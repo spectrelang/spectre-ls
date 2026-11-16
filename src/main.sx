@@ -171,7 +171,7 @@ pub fn main() void = trust {
         if due > 0 {
             val now: i64 = time.now_ns()
             if now >= due {
-                handlers.run_pending_check(g_doc_store)
+                handlers.run_pending_check(g_doc_store, g_sym_store)
             } else {
                 val remain: i64 = due - now
                 val ms: i64 = (remain + 999999) / 1000000
