@@ -1696,6 +1696,59 @@ fn find_exe_dir() ref u8 = trust {
     }
 }
 
+fn compiler_binary_name() ref u8 = {
+    when windows {
+        return c"spectre.exe"
+    }
+    return c"spectre"
+}
+
+fn find_compiler_std_dir() ref u8 = trust {
+    val path_env: mut ref u8 = none
+    if os.env(c"PATH") is some v {
+        path_env = v
+    }
+    if path_env == none {
+        return none
+    }
+    val len: i64 = cstr.len(path_env)
+    val sep: u8 = pathlib.path_sep()
+    val start: mut i64 = 0
+    val i: mut i64 = 0
+    for {
+        if i > len {
+            break
+        }
+        val at_end: bool = (i == len)
+        val is_sep: bool = at_end || @load8(@ptradd(path_env, i)) == sep
+        if is_sep {
+            if i > start {
+                val dir: ref u8 = raw_dup(@ptradd(path_env, start), i - start)
+                if dir != none {
+                    val compiler: ref u8 = path_join(dir, compiler_binary_name())
+                    if compiler != none {
+                        val has_compiler: bool = os.exists(compiler)
+                        @free(compiler)
+                        if has_compiler {
+                            val found: ref u8 = try_stdlib_dir(
+                                path_join(dir, c"spectrelib")
+                            )
+                            if found != none {
+                                @free(dir)
+                                return found
+                            }
+                        }
+                    }
+                    @free(dir)
+                }
+            }
+            start = i + 1
+        }
+        i++
+    }
+    return none
+}
+
 /// Old-style standard library snapshots (`std__<hash>`) that the compiler
 /// materialises inside a workspace.
 fn find_std_snapshot_dir(from_file: ref u8) ref u8 = trust {
@@ -1800,6 +1853,11 @@ pub fn find_std_dir(from_file: ref u8) ref u8 = trust {
             return c4
         }
         @free(exe_dir)
+    }
+
+    val compiler_std: ref u8 = find_compiler_std_dir()
+    if compiler_std != none {
+        return compiler_std
     }
 
     val cwd_candidate: ref u8 = try_stdlib_dir(raw_dup_cstr(c"spectrelib"))
