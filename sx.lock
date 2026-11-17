@@ -1,2 +1,2 @@
 version "1"
-dep "https://github.com/spectrelang/spectre.git" "2e3508cba6b00d4555c578e35957379b68927ace"
+dep "https://github.com/spectrelang/spectre.git" "b463ef7dc6bd111bb0913569fed72f1a45143490"
