@@ -338,7 +338,11 @@ pub fn typecheck(file: ref u8, content: ref u8) str.String = trust {
             root,
             1,
             c"",
-            false
+            false,
+            1000000,
+            false,
+            false,
+            true
         )
         for e in errors {
             builder.StringBuilder.append_cstr(out, e)
