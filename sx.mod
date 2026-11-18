@@ -1,6 +1,6 @@
 entry "./src/main.sx"
 version "v0.0.4"
-spectre_version "v0.0.17"
+spectre_version "v0.0.18"
 
 build release {
     flags "-release"
